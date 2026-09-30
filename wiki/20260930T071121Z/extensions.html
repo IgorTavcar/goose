@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Discovery, namespaces, cache races, dispatch, approvals, and code mode.">
+<meta name="color-scheme" content="light dark">
+<title>MCP extensions &amp; tool execution · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html" aria-current="page">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>MCP extensions & tool execution</h1>
+<p class="deck">Discovery, namespaces, cache races, dispatch, approvals, and code mode.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#extension-configuration-contracts">Extension configuration contracts</a>
+<a href="#discovery-and-the-namespace-contract">Discovery and the namespace contract</a>
+<a href="#a-cache-that-detects-invalidation-during-fetch">A cache that detects invalidation during fetch</a>
+<a href="#pending-requests-and-dispatch-lifecycle">Pending requests and dispatch lifecycle</a>
+<a href="#code-mode-tools-as-program-callbacks">Code mode: tools as program callbacks</a>
+<a href="#resources-and-prompts-are-first-class-capabilities">Resources and prompts are first-class capabilities</a>
+</nav>
+<section aria-labelledby="extension-configuration-contracts">
+<h2 id="extension-configuration-contracts">Extension configuration contracts</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">type value</th>
+<th scope="col">Transport / placement</th>
+<th scope="col">Key configuration</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>stdio</td>
+<td>Child process speaking MCP</td>
+<td>name, cmd, args, envs/env_keys, timeout, optional cwd.</td>
+</tr>
+<tr>
+<td>streamable_http</td>
+<td>MCP over HTTP</td>
+<td>name, uri, headers, timeout, optional Unix socket and OAuth configuration.</td>
+</tr>
+<tr>
+<td>builtin</td>
+<td>Bundled MCP implementation</td>
+<td>name, display_name, timeout, tool allowlist.</td>
+</tr>
+<tr>
+<td>platform</td>
+<td>In-process access to application facilities</td>
+<td>name, display_name, tool allowlist; direct agent/session context.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>ExtensionConfig is internally tagged by <code>type</code>. A builtin server and a platform extension are different placements. For example, developer is implemented among the platform extensions at this snapshot; the packaged MCP crate contains other servers. Avoid assuming all “built-in tools” are child processes.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension.rs#L1">crates/goose/src/agents/extension.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/mod.rs#L1">crates/goose/src/agents/platform_extensions/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-mcp/src/lib.rs#L1">crates/goose-mcp/src/lib.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="discovery-and-the-namespace-contract">
+<h2 id="discovery-and-the-namespace-contract">Discovery and the namespace contract</h2>
+<p>The extension manager lists tools, follows pagination, annotates ownership, and normally exposes <code>extension__tool</code> names. Selected first-class platform extensions expose unprefixed tools. Ownership metadata supports routing those names. Names shown to a model must map back to the intended server and its native tool name; blindly splitting every name on a separator is insufficient.</p>
+<p>Tool names are checked for duplicates when the generic machine assembles inference input. Goose also records what was advertised for an inference message. A later request is eligible for execution only if it belongs to that advertisement or falls under the explicit compatibility behavior for messages without inference metadata. This links dispatch to the capabilities the model actually saw.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension_manager/mod.rs#L1">crates/goose/src/agents/extension_manager/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L687">crates/goose/src/agents/state_machine/ops_toolcalling.rs:687</a>
+</p>
+</section>
+<section aria-labelledby="a-cache-that-detects-invalidation-during-fetch">
+<h2 id="a-cache-that-detects-invalidation-during-fetch">A cache that detects invalidation during fetch</h2>
+<p>Discovery can await slow MCP servers. Holding the cache mutex over those network calls would serialize unrelated work. Goose reads the cache under a short lock, captures a generation, fetches outside the lock, and only installs the result if the generation is unchanged and no other caller already filled the cache. Extension changes invalidate the cache and bump that generation.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension_manager/mod.rs#L749">crates/goose/src/agents/extension_manager/mod.rs:749</a> · lines 749–771</figcaption>
+<pre><code data-source="crates/goose/src/agents/extension_manager/mod.rs" data-start="749" data-end="771">    async fn get_all_tools_cached(&amp;self, session_id: &amp;str) -&gt; ExtensionResult&lt;Arc&lt;Vec&lt;Tool&gt;&gt;&gt; {
+        {
+            let cache = self.tools_cache.lock().await;
+            if let Some(ref tools) = *cache {
+                return Ok(Arc::clone(tools));
+            }
+        }
+
+        let version_before = self.tools_cache_version.load(Ordering::SeqCst);
+        let tools = Arc::new(self.fetch_all_tools(session_id).await?);
+
+        {
+            let mut cache = self.tools_cache.lock().await;
+            let version_after = self.tools_cache_version.load(Ordering::SeqCst);
+            if version_after == version_before &amp;&amp; cache.is_none() {
+                *cache = Some(Arc::clone(&amp;tools));
+            }
+        }
+
+        Ok(tools)
+    }
+
+    fn host_supports_mcp_apps(&amp;self) -&gt; bool {</code></pre>
+</figure>
+<p>The returned value can still reflect the fetch already performed during an invalidation race; the generation check prevents stale shared cache installation. It is a useful consistency compromise, not a linearizable discovery snapshot or a single-flight guarantee. Concurrent misses can duplicate discovery calls.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension_manager/mod.rs#L592">crates/goose/src/agents/extension_manager/mod.rs:592</a>
+</p>
+</section>
+<section aria-labelledby="pending-requests-and-dispatch-lifecycle">
+<h2 id="pending-requests-and-dispatch-lifecycle">Pending requests and dispatch lifecycle</h2>
+<ol>
+<li>Scan the kickoff suffix for tool requests and matching tool responses, excluding answered and externally executed calls.</li>
+<li>Reconstruct approval state and inspect advertised pending calls; mark executable decisions or persist an ActionRequired request.</li>
+<li>Filter pending requests against current known tools. Chat mode returns a skipped-tool result instead of dispatching.</li>
+<li>For executable calls, run blocking pre-tool hooks, collect extended observations, and dispatch with session and cancellation context.</li>
+<li>Merge result/notification streams, correlate by tool ID, emit post-tool success or failure hooks, and persist results.</li>
+<li>Unknown-tool handling provides a separate resolution path for calls current operations cannot dispatch.</li>
+</ol>
+<p>A tool result marked <code>is_error=true</code> is a failure even if the transport returned Ok. That classification is shared with recipe final-output execution so policy does not silently depend on which path invoked the tool.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_tool_approval.rs#L1">crates/goose/src/agents/state_machine/ops_tool_approval.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L1">crates/goose/src/agents/state_machine/ops_toolcalling.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_unknown_tool.rs#L1">crates/goose/src/agents/state_machine/ops_unknown_tool.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="code-mode-tools-as-program-callbacks">
+<h2 id="code-mode-tools-as-program-callbacks">Code mode: tools as program callbacks</h2>
+<p>The optional code_execution platform extension builds PCTX callbacks from model-visible tools, excluding itself and resource-only entries. Public names are decomposed into namespace/function pairs using separators or owner metadata. Programs can combine calls and process intermediate data inside a JavaScript runtime rather than returning every intermediate value to the model.</p>
+<p>Callback configuration is serialized, sorted, and hashed so discovery order does not trigger pointless rebuilds. The cache uses read-then-write double checking. Runtime execution runs on a blocking worker with a current-thread Tokio runtime; native async callbacks bridge back to the main runtime. Timeout and cancellation cancel dispatch and briefly drain the task before returning.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/code_execution.rs#L1">crates/goose/src/agents/platform_extensions/code_execution.rs:1</a>
+</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/code_execution.rs#L657">crates/goose/src/agents/platform_extensions/code_execution.rs:657</a> · lines 657–669</figcaption>
+<pre><code data-source="crates/goose/src/agents/platform_extensions/code_execution.rs" data-start="657" data-end="669">    fn hash(cfgs: &amp;[CallbackConfig]) -&gt; u64 {
+        let mut cfg_strings: Vec&lt;_&gt; = cfgs
+            .iter()
+            .filter_map(|c| serde_json::to_string(c).ok())
+            .collect();
+        cfg_strings.sort();
+
+        let mut hasher = DefaultHasher::new();
+        for s in cfg_strings {
+            s.hash(&amp;mut hasher);
+        }
+        hasher.finish()
+    }</code></pre>
+</figure>
+<p>The attached tool_graph is descriptive execution metadata. It should not be mistaken for proof that the runtime is scheduling all calls as a validated DAG. Tool execution and permission policy remain the meaningful boundaries.</p>
+</section>
+<section aria-labelledby="resources-and-prompts-are-first-class-capabilities">
+<h2 id="resources-and-prompts-are-first-class-capabilities">Resources and prompts are first-class capabilities</h2>
+<p>MCP extensions can expose resources, reusable prompts, and tool-linked UI resources as well as tools. Goose’s manager provides list/read/get operations and MCP Apps attachment handling. Dynamic extension changes mean history can refer to a server that is no longer active; prompt assembly explicitly tells the model which extensions are currently available and sorts them to stabilize the prompt cache.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension_manager/mod.rs#L1">crates/goose/src/agents/extension_manager/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L810">crates/goose/src/agents/state_machine/ops_toolcalling.rs:810</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="providers.html">← Providers & inference APIs</a>
+<a href="context.html">Context management & compaction algorithms →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

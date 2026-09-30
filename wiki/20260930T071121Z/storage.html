@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="SQLite storage, effect application, usage ledgers, and race boundaries.">
+<meta name="color-scheme" content="light dark">
+<title>Persistence, sessions &amp; concurrency · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html" aria-current="page">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Persistence, sessions & concurrency</h1>
+<p class="deck">SQLite storage, effect application, usage ledgers, and race boundaries.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#session-identity-and-storage-layout">Session identity and storage layout</a>
+<a href="#logical-tables">Logical tables</a>
+<a href="#why-begin-immediate-is-a-strong-choice">Why BEGIN IMMEDIATE is a strong choice</a>
+<a href="#persistence-before-an-immediately-answerable-notification">Persistence before an immediately answerable notification</a>
+<a href="#usage-accounting-is-not-prompt-size">Usage accounting is not prompt size</a>
+<a href="#metadata-updates-and-secure-local-files">Metadata updates and secure local files</a>
+</nav>
+<section aria-labelledby="session-identity-and-storage-layout">
+<h2 id="session-identity-and-storage-layout">Session identity and storage layout</h2>
+<p>SessionManager is the application-facing facade; SessionStorage owns a lazily connected SQLx SQLite pool. The database lives under the configured data directory at <code>sessions/sessions.db</code>. Session state includes working directory, provider/model configuration, mode, extension data, optional recipe, archive/project metadata, and parent_session_id for delegation. Conversation loading is optional so metadata-only operations can avoid reading all messages.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L1">crates/goose/src/session/session_manager.rs:1</a>
+</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L950">crates/goose/src/session/session_manager.rs:950</a> · lines 950–958</figcaption>
+<pre><code data-source="crates/goose/src/session/session_manager.rs" data-start="950" data-end="958">        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_secs(30))
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+
+        SqlitePoolOptions::new().connect_lazy_with(options)
+    }</code></pre>
+</figure>
+</section>
+<section aria-labelledby="logical-tables">
+<h2 id="logical-tables">Logical tables</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Table</th>
+<th scope="col">Meaning</th>
+<th scope="col">Notable fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sessions</td>
+<td>Identity, configuration, latest and accumulated usage</td>
+<td>id, working_dir, session_type, extension_data, recipe_json, model_config_json, parent_session_id.</td>
+</tr>
+<tr>
+<td>messages</td>
+<td>Ordered durable transcript</td>
+<td>database row id, logical message_id, session_id, role, content_json, created_timestamp, metadata_json.</td>
+</tr>
+<tr>
+<td>usage_ledger</td>
+<td>Billable provider request history</td>
+<td>model, input/output/cache tokens, cost, cost_source, is_compaction.</td>
+</tr>
+<tr>
+<td>schema_version</td>
+<td>Migration state</td>
+<td>version, applied_at.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The message table’s integer primary key and optional logical message ID have different purposes. Logical IDs correlate live updates and metadata; SQL row identity is storage machinery. JSON content preserves typed blocks beyond what role/text columns could represent. Inventory tables are also created during initialization; this table summarizes conversation persistence rather than the complete database.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L1066">crates/goose/src/session/session_manager.rs:1066</a>
+</p>
+</section>
+<section aria-labelledby="why-begin-immediate-is-a-strong-choice">
+<h2 id="why-begin-immediate-is-a-strong-choice">Why BEGIN IMMEDIATE is a strong choice</h2>
+<p>A deferred SQLite transaction can read under a shared lock and later attempt to upgrade to a writer while another transaction is doing the same. Goose starts relevant write paths with BEGIN IMMEDIATE, taking the write reservation before performing their reads. With WAL and a 30-second busy timeout, contention is serialized at the start of the transaction rather than emerging as an awkward lock-upgrade failure midway through a read-modify-write sequence.</p>
+<p>Schema creation uses that same approach and idempotent CREATE TABLE IF NOT EXISTS / INSERT OR IGNORE statements. A per-instance OnceCell prevents repeated initialization in one manager, while the SQLite transaction handles separate manager instances racing on first boot. A local once flag alone could not solve a cross-instance initialization race.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L995">crates/goose/src/session/session_manager.rs:995</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L1260">crates/goose/src/session/session_manager.rs:1260</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L3855">crates/goose/src/session/session_manager.rs:3855</a>
+</p>
+</section>
+<section aria-labelledby="persistence-before-an-immediately-answerable-notification">
+<h2 id="persistence-before-an-immediately-answerable-notification">Persistence before an immediately answerable notification</h2>
+<p>The concrete effect handler ensures IDs and enriches usage, then applies each effect. Only after that pass does it publish tool-confirmation messages and usage/history events. A fast client can therefore answer an approval request without beating the database write that makes the request discoverable. This is a small ordering rule with a large behavioral impact.</p>
+<p>Several effects can still involve separate storage calls and transactions. A tool can finish outside SQLite before its result is appended. A process crash at that point can leave the conversation with an unanswered request even though the external effect occurred. Recoverable conversation state is valuable, but exactly-once external mutation would require idempotency or a stronger application protocol beyond this handler.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/session.rs#L1">crates/goose/src/agents/state_machine/session.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L1">crates/goose/src/agents/state_machine/ops_toolcalling.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="usage-accounting-is-not-prompt-size">
+<h2 id="usage-accounting-is-not-prompt-size">Usage accounting is not prompt size</h2>
+<p>Session metrics distinguish latest request usage, accumulated usage, and ledger entries; cache read/write tokens are explicit. Compaction writes its own usage entries and computes retained context separately. Cost has a source marker because provider accounting and locally derived estimates differ. Export, import, copy, truncation, and metadata updates sit above storage and must preserve those meanings.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L520">crates/goose/src/session/session_manager.rs:520</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/usage.rs#L1">crates/goose/src/agents/state_machine/usage.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation/token_usage.rs#L1">crates/goose-provider-types/src/conversation/token_usage.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="metadata-updates-and-secure-local-files">
+<h2 id="metadata-updates-and-secure-local-files">Metadata updates and secure local files</h2>
+<p>Tool-request patches find the request by call ID and merge into tool_meta under a write transaction. Message visibility changes use a logical message ID. Configuration uses separate file locking and secret storage; it is not another table in the conversation database. On Unix, session directory creation applies mode 0700. These choices reduce local accidental disclosure but do not make arbitrary tool outputs safe to expose or export.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L702">crates/goose/src/session/session_manager.rs:702</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/config/base.rs#L1">crates/goose/src/config/base.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="context.html">← Context management & compaction algorithms</a>
+<a href="security.html">Permissions, hooks & trust boundaries →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

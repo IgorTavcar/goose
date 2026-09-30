@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Roles, visibility, streaming identity, tool correlation, and wire serialization.">
+<meta name="color-scheme" content="light dark">
+<title>Conversation &amp; event contracts · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html" aria-current="page">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Conversation & event contracts</h1>
+<p class="deck">Roles, visibility, streaming identity, tool correlation, and wire serialization.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#a-message-is-richer-than-a-chat-string">A message is richer than a chat string</a>
+<a href="#roles-and-effective-roles">Roles and effective roles</a>
+<a href="#two-visibility-axes-and-content-audiences">Two visibility axes and content audiences</a>
+<a href="#streaming-coalescence">Streaming coalescence</a>
+<a href="#events-and-serialization-are-separate-surfaces">Events and serialization are separate surfaces</a>
+<a href="#conversation-repair-preserves-a-requestable-history">Conversation repair preserves a requestable history</a>
+</nav>
+<section aria-labelledby="a-message-is-richer-than-a-chat-string">
+<h2 id="a-message-is-richer-than-a-chat-string">A message is richer than a chat string</h2>
+<p>The internal Message contains a role, creation time, content blocks, optional stable ID, metadata, and other typed state. Content includes text, image, document, tool request/response, reasoning, redacted reasoning, action-required, notifications, and errors. Tool requests carry a correlation ID and a Result-valued parsed call; a malformed model call is representable without pretending it is executable.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation/message.rs#L1">crates/goose-provider-types/src/conversation/message.rs:1</a>
+</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation/message.rs#L133">crates/goose-provider-types/src/conversation/message.rs:133</a> · lines 133–143</figcaption>
+<pre><code data-source="crates/goose-provider-types/src/conversation/message.rs" data-start="133" data-end="143">pub struct ToolRequest {
+    pub id: String,
+    #[serde(with = &quot;tool_result_serde&quot;)]
+    pub tool_call: ToolResult&lt;CallToolRequestParams&gt;,
+    #[serde(skip_serializing_if = &quot;Option::is_none&quot;)]
+    pub metadata: Option&lt;ProviderMetadata&gt;,
+    #[serde(rename = &quot;_meta&quot;, skip_serializing_if = &quot;Option::is_none&quot;)]
+    pub tool_meta: Option&lt;serde_json::Value&gt;,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]</code></pre>
+</figure>
+</section>
+<section aria-labelledby="roles-and-effective-roles">
+<h2 id="roles-and-effective-roles">Roles and effective roles</h2>
+<p>MCP’s role enum supplies User and Assistant, but tool results are represented in user-role messages. The conversation layer derives an EffectiveRole to distinguish tool responses from new user input. Agent predicates rely on that distinction to know whether to call inference, execute tools, or finish. Directly counting user-role messages produces the wrong answer for a tool-heavy task.</p>
+<p>ToolRequest and ToolResponse are paired by their ID, not by array position. An assistant can request several tools, and notifications or approvals can appear between the request and result. One ID is the unit of unanswered-work detection, approval state, external execution tracking, and metadata patching.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L645">crates/goose-provider-types/src/conversation.rs:645</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_tool_approval.rs#L1">crates/goose/src/agents/state_machine/ops_tool_approval.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="two-visibility-axes-and-content-audiences">
+<h2 id="two-visibility-axes-and-content-audiences">Two visibility axes and content audiences</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Projection</th>
+<th scope="col">Meaning</th>
+<th scope="col">Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>User visible</td>
+<td>Belongs in the displayed transcript</td>
+<td>Original user prompt, public assistant text, tool status.</td>
+</tr>
+<tr>
+<td>Agent visible</td>
+<td>Belongs in the next model request</td>
+<td>User prompt, tool response, hidden compaction summary.</td>
+</tr>
+<tr>
+<td>User only</td>
+<td>Displayed without feeding it back</td>
+<td>Some approval prompts and command responses.</td>
+</tr>
+<tr>
+<td>Agent only</td>
+<td>Model context without visible chat noise</td>
+<td>Compaction continuation and goal nudge.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A message-level flag alone is insufficient: individual TextContent blocks can have audience annotations. <code>agent_visible_messages</code> filters metadata, then projects content and drops empty messages. The user projection does the analogous operation. A message that contains both public and private blocks must not flatten them into a single unannotated string.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L178">crates/goose-provider-types/src/conversation.rs:178</a> · lines 178–187</figcaption>
+<pre><code data-source="crates/goose-provider-types/src/conversation.rs" data-start="178" data-end="187">    pub fn agent_visible_messages(&amp;self) -&gt; Vec&lt;Message&gt; {
+        self.0
+            .iter()
+            .filter(|message| message.metadata.agent_visible)
+            .map(Message::agent_visible_content)
+            .filter(|message| !message.content.is_empty())
+            .collect()
+    }
+
+    pub fn user_visible_messages(&amp;self) -&gt; Vec&lt;Message&gt; {</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation/message.rs#L1">crates/goose-provider-types/src/conversation/message.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="streaming-coalescence">
+<h2 id="streaming-coalescence">Streaming coalescence</h2>
+<p>Conversation::push coalesces fragments only when the incoming and trailing messages have the same nonempty ID; otherwise it appends a message. Text merging preserves audience boundaries. Thinking blocks can merge while the preceding block is unsigned, or when signatures match. A signed block followed by an unsigned delta starts a new block. Multi-block incoming chunks do not enter the single-block thinking merge case. These conditions preserve provider-issued signatures and semantic boundaries.</p>
+<p>The completion collector has matching rules. Its output uses the last supplied usage report; it does not sum reports. Missing usage with a message produces default usage for model “unknown.” Usage without a message yields an empty assistant message. An entirely empty stream returns ExecutionError. Consumers must distinguish these cases instead of assuming every success contains text.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L1">crates/goose-provider-types/src/conversation.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/base.rs#L404">crates/goose-provider-types/src/base.rs:404</a>
+</p>
+</section>
+<section aria-labelledby="events-and-serialization-are-separate-surfaces">
+<h2 id="events-and-serialization-are-separate-surfaces">Events and serialization are separate surfaces</h2>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/events.rs#L9">crates/goose-agent/src/events.rs:9</a> · lines 9–18</figcaption>
+<pre><code data-source="crates/goose-agent/src/events.rs" data-start="9" data-end="18">pub enum AgentEvent {
+    Message(Message),
+    Usage(ProviderUsage),
+    MessageUsage {
+        message_id: Option&lt;String&gt;,
+        usage: MessageUsage,
+    },
+    McpNotification((String, ServerNotification)),
+    HistoryReplaced(Conversation),
+}</code></pre>
+</figure>
+<p>AgentEvent is an internal Rust event enum. ACP handlers translate it into standard session updates and Goose custom notifications; it should not be treated as the JSON-RPC wire schema. Goose custom requests generally serialize fields as camelCase, while extension configuration uses a tagged snake_case type discriminator. The serialization attributes in each type are authoritative.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/tool_notifications.rs#L1">crates/goose/src/acp/server/tool_notifications.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_notifications.rs#L1">crates/goose-sdk-types/src/custom_notifications.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1">crates/goose-sdk-types/src/custom_requests.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension.rs#L1">crates/goose/src/agents/extension.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="conversation-repair-preserves-a-requestable-history">
+<h2 id="conversation-repair-preserves-a-requestable-history">Conversation repair preserves a requestable history</h2>
+<p>The conversation module includes fixes for protocol-invalid sequencing and separate merging for outgoing requests. The persisted transcript can retain visibility boundaries that a provider-specific request needs to collapse for role alternation. Request normalization is a view of history, not permission to overwrite the history itself. This separation makes provider format constraints compatible with audit-friendly local records.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L1">crates/goose-provider-types/src/conversation.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/inference.rs#L1">crates/goose-agent/src/inference.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="agent.html">← Agent loop & state-machine specification</a>
+<a href="providers.html">Providers & inference APIs →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

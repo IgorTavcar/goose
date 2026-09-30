@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Declarative tasks, parameter contracts, retries, and delegated sessions.">
+<meta name="color-scheme" content="light dark">
+<title>Recipes, skills &amp; agent orchestration · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html" aria-current="page">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Recipes, skills & agent orchestration</h1>
+<p class="deck">Declarative tasks, parameter contracts, retries, and delegated sessions.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#recipe-schema-and-execution-intent">Recipe schema and execution intent</a>
+<a href="#parsing-and-parameter-validation">Parsing and parameter validation</a>
+<a href="#recipe-completion-and-retry-algorithm">Recipe completion and retry algorithm</a>
+<a href="#skills-and-project-instructions">Skills and project instructions</a>
+<a href="#delegation-is-session-management-with-authorization">Delegation is session management with authorization</a>
+<a href="#scheduling-and-reproducibility">Scheduling and reproducibility</a>
+</nav>
+<section aria-labelledby="recipe-schema-and-execution-intent">
+<h2 id="recipe-schema-and-execution-intent">Recipe schema and execution intent</h2>
+<p>A recipe is a YAML or JSON task definition. Its version defaults to 1.0.0; title and description identify it, and at least instructions or prompt is expected. Optional extensions, model/provider settings, activities, author, parameters, structured response, sub_recipes, and retry configuration shape execution. A recipe packages inputs and policy; it is not a guarantee that the model will follow every instruction or produce a valid result.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Field group</th>
+<th scope="col">Contract</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>instructions / prompt</td>
+<td>System-task guidance and initial session input.</td>
+</tr>
+<tr>
+<td>settings</td>
+<td>goose_provider, goose_model, temperature, max_turns.</td>
+</tr>
+<tr>
+<td>parameters</td>
+<td>Typed inputs, required/optional/user_prompt requirement, defaults and optional selections.</td>
+</tr>
+<tr>
+<td>response.json_schema</td>
+<td>Requested final-output structure.</td>
+</tr>
+<tr>
+<td>sub_recipes</td>
+<td>Named paths, stringified value map, sequential_when_repeated.</td>
+</tr>
+<tr>
+<td>retry</td>
+<td>Checks, retry count, optional on_failure command and timeouts.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/recipe/mod.rs#L1">crates/goose/src/recipe/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/recipe/validate_recipe.rs#L1">crates/goose/src/recipe/validate_recipe.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="parsing-and-parameter-validation">
+<h2 id="parsing-and-parameter-validation">Parsing and parameter validation</h2>
+<p>The recipe path performs template preparation, parses YAML or JSON, deserializes typed values, and validates parameters. The validation module defines limits of 32 parameters, 200 total select options, and 128 KiB serialized parameter data. Error formatting traverses a safe schema path rather than indiscriminately echoing arbitrary user-controlled map keys. Invalid syntax and invalid typed schema produce different errors.</p>
+<p>Subrecipe values that arrive as numbers or objects are serialized into strings; plain strings retain their text. That makes downstream substitution consistent, but it means a caller must distinguish a string containing JSON from an already typed object. Use the checked-in validation and conversion paths rather than recreating them in a UI.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/recipe/validate_recipe.rs#L1">crates/goose/src/recipe/validate_recipe.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/recipe/template_recipe.rs#L1">crates/goose/src/recipe/template_recipe.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/recipe/mod.rs#L131">crates/goose/src/recipe/mod.rs:131</a>
+</p>
+</section>
+<section aria-labelledby="recipe-completion-and-retry-algorithm">
+<h2 id="recipe-completion-and-retry-algorithm">Recipe completion and retry algorithm</h2>
+<p>RetryOperation applies after a trailing assistant response satisfies ends_turn. A goal can add one hidden “verify the goal” nudge, recorded through operation metadata. A grind goal keeps adding continuation until another bound such as max_turns stops it. These nudges are not an independent proof of task success; recipe success checks supply concrete runtime validation.</p>
+<ol>
+<li>Run configured success checks under the configured timeout. Success allows later finish operations to proceed.</li>
+<li>Read retry attempts from the kickoff message. If the limit is reached, append an error.</li>
+<li>Optionally run the on_failure command under a separate timeout.</li>
+<li>Reset history to everything through the kickoff message and increment attempts on that retained message.</li>
+<li>Return a replacement-conversation effect so the next pass reattempts the task.</li>
+</ol>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_retry.rs#L73">crates/goose/src/agents/state_machine/ops_retry.rs:73</a> · lines 73–86</figcaption>
+<pre><code data-source="crates/goose/src/agents/state_machine/ops_retry.rs" data-start="73" data-end="86">    /// Attempts are counted on the kickoff message because a retry replaces the
+    /// conversation with everything up to and including it — the only message
+    /// that outlives the attempt it belongs to.
+    fn attempts(&amp;self, messages: &amp;[Message]) -&gt; u32 {
+        messages
+            .first()
+            .and_then(|message| self.message_meta(message, ATTEMPTS))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32
+    }
+}
+
+#[async_trait]
+impl Operation&lt;Session, GooseEffect&gt; for RetryOperation&lt;&#x27;_&gt; {</code></pre>
+</figure>
+<p>Putting the counter on the kickoff is a particularly strong detail: the reset deletes the failed attempt’s later messages, so a counter attached to its final response would disappear. These retries differ from provider network retries and can involve shell checks or cleanup commands.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/retry.rs#L1">crates/goose/src/agents/retry.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="skills-and-project-instructions">
+<h2 id="skills-and-project-instructions">Skills and project instructions</h2>
+<p>Skills add reusable task instructions and capabilities, while hints/project operations feed repository context into prompt preparation. Subdirectory hints are inferred from tool argument paths, enabling guidance relevant to the directories the agent has touched. The generic machine lets these operations contribute prompt parts independently of whether their run method applies on a particular pass.</p>
+<p>Prompt parts should have stable order and defined identities because provider caching depends on prefix stability. A tool that moves into a new directory can legitimately change context without requiring every project instruction to be loaded from the beginning.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/skills/mod.rs#L1">crates/goose/src/skills/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_skills.rs#L1">crates/goose/src/agents/state_machine/ops_skills.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_project.rs#L1">crates/goose/src/agents/state_machine/ops_project.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/hints/load_hints.rs#L1">crates/goose/src/hints/load_hints.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="delegation-is-session-management-with-authorization">
+<h2 id="delegation-is-session-management-with-authorization">Delegation is session management with authorization</h2>
+<p>The orchestrator platform extension can list/view sessions, start an agent, send messages, and interrupt. New tasks inherit provider/model settings through the current session and use AgentManager. parent_session_id and SessionType distinguish delegated sessions from ordinary user sessions. Cancellation registration has a guard to remove a token when an incomplete setup exits.</p>
+<p>The send-message authorization permits ordinary callers according to its non-SubAgent path, but restricts SubAgent callers to sibling delegated sessions with the same parent and rejects sending to oneself. A delegated task cannot use that operation to send into another tree, its parent user session, or a descendant merely because it knows the ID. These checks live in code rather than being left to prompt instructions.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/orchestrator.rs#L1">crates/goose/src/agents/platform_extensions/orchestrator.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/execution/manager.rs#L1">crates/goose/src/execution/manager.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="scheduling-and-reproducibility">
+<h2 id="scheduling-and-reproducibility">Scheduling and reproducibility</h2>
+<p>Scheduler support stores and triggers recipe work with configured timing and service lifecycle. CLI commands and ACP custom schedule methods expose administration. Reproducibility depends on the recipe and values, selected provider/model, active tools, working directory, policy configuration, and the external state being acted upon. Saving a YAML file alone does not capture all of those variables.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/scheduler/mod.rs#L1">crates/goose/src/scheduler/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-cli/src/commands/schedule.rs#L1">crates/goose-cli/src/commands/schedule.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L1">crates/goose-sdk-types/src/custom_requests/schedule.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="security.html">← Permissions, hooks & trust boundaries</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

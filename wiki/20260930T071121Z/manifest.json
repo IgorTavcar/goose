@@ -1,0 +1,639 @@
+{
+  "repository": "https://github.com/IgorTavcar/goose.git",
+  "source_revision": "ac15f938151bb8c0efd93ed9c2c1cf61298934bf",
+  "edition": "20260930T071121Z",
+  "workspace_version": "1.53.0",
+  "pages": [
+    {
+      "slug": "index",
+      "title": "Goose internals wiki",
+      "deck": "Architecture, philosophy, specifications, APIs, and the algorithms that make an agent work."
+    },
+    {
+      "slug": "architecture",
+      "title": "Architecture & system map",
+      "deck": "How native applications, the agent runtime, providers, and tools fit together."
+    },
+    {
+      "slug": "philosophy",
+      "title": "Design philosophy & tradeoffs",
+      "deck": "Observed principles, separated from promises about the product."
+    },
+    {
+      "slug": "agent",
+      "title": "Agent loop & state-machine specification",
+      "deck": "The ordered pipeline, history predicates, effects, and cancellation semantics."
+    },
+    {
+      "slug": "messages",
+      "title": "Conversation & event contracts",
+      "deck": "Roles, visibility, streaming identity, tool correlation, and wire serialization."
+    },
+    {
+      "slug": "providers",
+      "title": "Providers & inference APIs",
+      "deck": "Trait contracts, adapters, metadata, retries, and local or delegated inference."
+    },
+    {
+      "slug": "extensions",
+      "title": "MCP extensions & tool execution",
+      "deck": "Discovery, namespaces, cache races, dispatch, approvals, and code mode."
+    },
+    {
+      "slug": "context",
+      "title": "Context management & compaction algorithms",
+      "deck": "Trigger arithmetic, protected turns, summaries, and preserved transcripts."
+    },
+    {
+      "slug": "storage",
+      "title": "Persistence, sessions & concurrency",
+      "deck": "SQLite storage, effect application, usage ledgers, and race boundaries."
+    },
+    {
+      "slug": "security",
+      "title": "Permissions, hooks & trust boundaries",
+      "deck": "What the approval pipeline enforces, and where its guarantees end."
+    },
+    {
+      "slug": "recipes",
+      "title": "Recipes, skills & agent orchestration",
+      "deck": "Declarative tasks, parameter contracts, retries, and delegated sessions."
+    },
+    {
+      "slug": "desktop",
+      "title": "Desktop, CLI & client lifecycle",
+      "deck": "Electron boundaries, ACP connection recovery, and session presentation."
+    },
+    {
+      "slug": "algorithms",
+      "title": "Important algorithms: detailed walkthroughs",
+      "deck": "Step selection, streaming, edit safety, graph traversal, caching, and runtime cleanup."
+    },
+    {
+      "slug": "patterns",
+      "title": "Brilliant code & design patterns",
+      "deck": "A curated reading list with the benefit, evidence, and limitation of each choice."
+    },
+    {
+      "slug": "apis",
+      "title": "API & protocol reference",
+      "deck": "ACP transport, custom methods, Rust extension points, and language bindings."
+    },
+    {
+      "slug": "engineering",
+      "title": "Specifications, verification & reading guide",
+      "deck": "Version boundaries, source provenance, maintenance, and honest validation scope."
+    }
+  ],
+  "sources": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "3c852fbffd756e76723f94c52299aed8d055b706f4cb01af9c35a0e0a2ee6e9a"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "64c1a0af6dd44cce154eaaa35b795bd33a941dabd3e234cc9133bbc4712eccac"
+    },
+    {
+      "path": "README.md",
+      "sha256": "0f1df85a0c457caf1f3c4e1c0370f2da3887fffa588d207862cfc298c1d39755"
+    },
+    {
+      "path": "crates/goose-agent/README.md",
+      "sha256": "c15722f3014976aebc8d196c5f4ca7128382ee2a56251cb8fd177f5002a3e441"
+    },
+    {
+      "path": "crates/goose-agent/src/events.rs",
+      "sha256": "758dada840cf4055b5e5b2580a9e4b3e3e331ce1986283e8325d9037d542b5c0"
+    },
+    {
+      "path": "crates/goose-agent/src/inference.rs",
+      "sha256": "869f19e52082f99b26cf8c1c299cec8af89e46336cb6ed7d56573f8378f96f7a"
+    },
+    {
+      "path": "crates/goose-agent/src/machine.rs",
+      "sha256": "465e08840141430abdc5ffd73a5524260fd17705c3031cd6a30bda4298ecdbe0"
+    },
+    {
+      "path": "crates/goose-agent/src/operation.rs",
+      "sha256": "a8442003f6a51ade100e7874c4add737c52f62bda06db0436bdf73ce49574fde"
+    },
+    {
+      "path": "crates/goose-agent/src/tool.rs",
+      "sha256": "f9fc458622d5d7178d869945c17e6f9167c181af33553a07ce7ed64741fa626c"
+    },
+    {
+      "path": "crates/goose-cli/src/cli.rs",
+      "sha256": "c952ece51d6cc6be038781502f72444bf4c2feb5f1c7a1548ad50eedef6f880e"
+    },
+    {
+      "path": "crates/goose-cli/src/commands/schedule.rs",
+      "sha256": "8dba7c88f2e28d589ca47dd92bf5142b7ca0ac4fe82a379ccf33be8847beccd7"
+    },
+    {
+      "path": "crates/goose-cli/src/main.rs",
+      "sha256": "301d1ff4503b12c3e6cc79a3a8c0a4e0e2b195c238f4f50e88cb00520055a284"
+    },
+    {
+      "path": "crates/goose-context-management/src/lib.rs",
+      "sha256": "e3760db96239322f2c75adb6de2789c44d01675f4dad58a0fda33165152a1dca"
+    },
+    {
+      "path": "crates/goose-context-management/src/provider.rs",
+      "sha256": "9c3ecc457ba381fd22b62dd9c5d0e5cde1b85f4432c9c870742b0dbe17e95c8a"
+    },
+    {
+      "path": "crates/goose-context-management/src/structured.rs",
+      "sha256": "408ec15d4294ae507952bdf30db6b749c7cc2a8d0581456acc1de87158a85e11"
+    },
+    {
+      "path": "crates/goose-context-management/src/summarize.rs",
+      "sha256": "fe02b06d3780860b28be7fa9d804269f5c283dce7df2068c053db641811b4737"
+    },
+    {
+      "path": "crates/goose-local-inference/README.md",
+      "sha256": "86c37953bcada5852a7c1ed128f9cd075ab1c73b572dbb701e063c0fc5ab6fd5"
+    },
+    {
+      "path": "crates/goose-mcp/src/lib.rs",
+      "sha256": "36531f99bd530ef706262d0f450a3d14c909abb32273200900df7bf3efab8347"
+    },
+    {
+      "path": "crates/goose-provider-types/README.md",
+      "sha256": "83164a205d53a641509e267295942eef0056aca6bc0d630923e48b5b3f3655d6"
+    },
+    {
+      "path": "crates/goose-provider-types/src/base.rs",
+      "sha256": "6cdbddcd2d55ded9f2f33dace4472e1509666d0ef3b40647844068fd00797d4a"
+    },
+    {
+      "path": "crates/goose-provider-types/src/canonical/README.md",
+      "sha256": "cbc746e8e3011659df5c551200f6dc1ad51d71cc22ef4153107e3fe40ab2cafd"
+    },
+    {
+      "path": "crates/goose-provider-types/src/conversation.rs",
+      "sha256": "f79313c11edfc3b2a464eea3750b8c68d6b05ad5624eb0c474523e92efd8f244"
+    },
+    {
+      "path": "crates/goose-provider-types/src/conversation/message.rs",
+      "sha256": "2ff5bbab59d1b6483b85869e779d084b932288e26154bec4500809a0fb9ed935"
+    },
+    {
+      "path": "crates/goose-provider-types/src/conversation/token_usage.rs",
+      "sha256": "6bcf08bac56748193d1078e17f30073bae716472c44d82fc59c9dbd5c6cc45f3"
+    },
+    {
+      "path": "crates/goose-provider-types/src/goose_mode.rs",
+      "sha256": "d5b0ae31b4882085b572ca7b595f9153f595c417f797d4ef6a50bcba1e7ebdd7"
+    },
+    {
+      "path": "crates/goose-provider-types/src/maybe_send.rs",
+      "sha256": "b17aac9281c16b16c9d800466649d555f765d73e5dfd7a478d23cd07d1995685"
+    },
+    {
+      "path": "crates/goose-provider-types/src/permission.rs",
+      "sha256": "8eced3d168f3727ceaef1f56f5b990431d0b02b87656bf51e63549bab922fdd5"
+    },
+    {
+      "path": "crates/goose-provider-types/src/retry.rs",
+      "sha256": "17101138a0867701859495d113d5cae875774194330545c85a1dc8fdb78e39ca"
+    },
+    {
+      "path": "crates/goose-providers/Cargo.toml",
+      "sha256": "6006b842958c99dd99579d974d6aef20b89191deaf28777b6572bd0079808438"
+    },
+    {
+      "path": "crates/goose-providers/README.md",
+      "sha256": "fc95d03e1365805779dc79ce6e262d9442c9da5bf533885b60f90f054ccc1ba7"
+    },
+    {
+      "path": "crates/goose-providers/src/declarative.rs",
+      "sha256": "4ac6c5d7b30db43125ce0564011e0911590fabe5bad3d7e0a093b30324764347"
+    },
+    {
+      "path": "crates/goose-roaming/README.md",
+      "sha256": "3347ff602efafa5a66e24dfa18c19dc991cbcd61bfd23c044cb0a34a8970e1c4"
+    },
+    {
+      "path": "crates/goose-sdk-types/src/custom_notifications.rs",
+      "sha256": "170cc2bfed59cbbd725dc796109de8b49c1a8601710954d785da904532286816"
+    },
+    {
+      "path": "crates/goose-sdk-types/src/custom_requests.rs",
+      "sha256": "d8ebe2c03315ddd3d1a0ab8e3507b509157bbc9d0330fa47801300e8cf4b2c96"
+    },
+    {
+      "path": "crates/goose-sdk-types/src/custom_requests/recipe.rs",
+      "sha256": "25de6fee9e6d754d0824d64260e2b27b8ad7665907356264af2b8d95824f40cb"
+    },
+    {
+      "path": "crates/goose-sdk-types/src/custom_requests/schedule.rs",
+      "sha256": "29f7a91fe1d9556c25d1af6e3d5f0992c1761d500c7ecc50b213172a156500c7"
+    },
+    {
+      "path": "crates/goose-sdk/README.md",
+      "sha256": "6656a34646a618472e4016c34ea980e672f68ee85bdd40844c77285f3781704d"
+    },
+    {
+      "path": "crates/goose-sdk/src/bindings.rs",
+      "sha256": "0731de5f85f16cd300be03c1404821b72225a0bf448f7625fa581f189893f553"
+    },
+    {
+      "path": "crates/goose-sdk/src/observability.rs",
+      "sha256": "cd13c9a5a60c389764f62eee4f17eeb48711ae39d2bf6861cf191bbad03a5e02"
+    },
+    {
+      "path": "crates/goose/src/acp/provider.rs",
+      "sha256": "b1e495a255be85903b9c524db0cd6f63e24f5c6f3b6c2e9274d46354d3fcc057"
+    },
+    {
+      "path": "crates/goose/src/acp/server/agent_requests.rs",
+      "sha256": "0f8335d2eb73419d248517485999375694c1a52235229d5c208e94e28cc89ef8"
+    },
+    {
+      "path": "crates/goose/src/acp/server/dispatch.rs",
+      "sha256": "31b424882c7735f3c195a8b4834c8431ab927c255671eacff454e82e1d6bbfd2"
+    },
+    {
+      "path": "crates/goose/src/acp/server/elicitation.rs",
+      "sha256": "9429d0dc6052bccc74b31427d30786190abd1cc896f43a621b66a7f5a1861f87"
+    },
+    {
+      "path": "crates/goose/src/acp/server/tool_notifications.rs",
+      "sha256": "e065a288a406dead04b8dc166b6a30249ed314542ccb95a03be1007966b817f6"
+    },
+    {
+      "path": "crates/goose/src/acp/server/tools.rs",
+      "sha256": "575caf20938bc3c9eb0120ea68135b1c8c9919f0c74c83a2addaa0a3f9464a08"
+    },
+    {
+      "path": "crates/goose/src/acp/transport/auth.rs",
+      "sha256": "13f0eff02010219fb5cb692068f4aaa6e7b37af17bfde2cbc40056d678fe7614"
+    },
+    {
+      "path": "crates/goose/src/acp/transport/mod.rs",
+      "sha256": "7b786c7b7d0aa461b07efbdb518ff87079b4d525a89086e51fb978c288da7a45"
+    },
+    {
+      "path": "crates/goose/src/agents/agent.rs",
+      "sha256": "c0e6128bb6bf400ea066e908f2656159c2c1895a0061a1e44f030078922ec193"
+    },
+    {
+      "path": "crates/goose/src/agents/extension.rs",
+      "sha256": "7ecd10ee0633059b5eb72f12fbed1bef71ec2f0600abf2cdd067a260632cb157"
+    },
+    {
+      "path": "crates/goose/src/agents/extension_manager/mod.rs",
+      "sha256": "cca72e241d8786ba44256a8d2e4671f3f353e6b57e04427b8892a3c346bf1943"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/analyze/graph.rs",
+      "sha256": "f831c30f34a0737c468485f0b6cadb0e999e17afebb61092aa561aeb3b95cf0b"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/analyze/parser.rs",
+      "sha256": "b7f9fa1b826f8aa47346855e7a978b5d66ba3e574ae6dd1489da210f11d52e38"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/code_execution.rs",
+      "sha256": "fd5ace5986d6dbb0c2398737cb042238f6e227b7779d10d8f2fe653c85017d3b"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/developer/edit.rs",
+      "sha256": "05157d5216c83f90ea82c7516d4463401601303ac52c83606ccf0f9ebcc3e27b"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/mod.rs",
+      "sha256": "e1315f6aa2393ee31dcfe4846240059eeef03400be58f60ba762b4566af0354b"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/orchestrator.rs",
+      "sha256": "54fcea4052b886d05ee5def2f24f9e485dcbcc5dc2e758b54bc8395d4251ee36"
+    },
+    {
+      "path": "crates/goose/src/agents/retry.rs",
+      "sha256": "5bcf2d2750ea6b34ad90582151d4ed1ef89951e947d994a3c14cde65c8ccb45b"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/effects.rs",
+      "sha256": "bf8df9959d0d0d51df31cfc9a589a0f4d9af411a701367b0ccb54f924e506fa2"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/mod.rs",
+      "sha256": "ba5103efb536ec23412e927952887a29d9b69b4f5a800210e12ae81d9e23d624"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_maxturns.rs",
+      "sha256": "cd1914171498f8c90d15372a15f9f4da66dff6d0bc784f6a1f693ad10ed40c05"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_project.rs",
+      "sha256": "7eef35a2e2ba532c5ef33dc8c78379222e835a6662e33676400d162d949d7c70"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_recipe.rs",
+      "sha256": "9afc51c3ec83066fc350e2304a530d8b578eb1b9748d42899843f178b4e58866"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_retry.rs",
+      "sha256": "46d9f7ee30e8a767dd5237d13b9d5bb8d778935b11a93ce883eb9b27c84019c1"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_skills.rs",
+      "sha256": "2d274c034c89b7a886116aa15dd7e676e7adbb5eedebacbbbabd81df4943b0e4"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_stop_hook.rs",
+      "sha256": "bfff4a61d64edef702651c1cc789ef253fdcb114e1f254c89b3405a11457a2f4"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_tool_approval.rs",
+      "sha256": "fe4c1e35edcfa62b4173ea5a039b6d7a4893c83b59cbe1869c26e84b302d8ec0"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_toolcalling.rs",
+      "sha256": "7cde82b06eac6c01a2f81ad7edb01783a3aac5f567cb0db381cce56021e72ea7"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_unknown_tool.rs",
+      "sha256": "cb8c516a683421267ea72d0d4c3c09f0a4a3d00e48afb229d14a91f8d5e8d3fc"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/session.rs",
+      "sha256": "2659f1b5943977aed7df3c2f924b3d53c0058b50eded616f4dd82d5e5d37c27b"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/tool_confirmation.rs",
+      "sha256": "432f48ba877e194ae69b595447ca2c27dc810c257790f5c77c4d4f54406306fa"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/usage.rs",
+      "sha256": "b8117cfe226aa42e07521116d059d4771a5616fe0b01d0b24c72a8541049b411"
+    },
+    {
+      "path": "crates/goose/src/config/base.rs",
+      "sha256": "0ef2b28f7902daa6ea6277e0690e3b87d847ef968f41c4f28da201c8d4f5d5ce"
+    },
+    {
+      "path": "crates/goose/src/context_mgmt/mod.rs",
+      "sha256": "8747c8239e2ef43ac9db9012f0d9110479e73c0931249409c34d90b5f6ac9769"
+    },
+    {
+      "path": "crates/goose/src/execution/manager.rs",
+      "sha256": "416d08aca03e2c12ec793fa2c2a8532feb9c1f04e321809e4cbe6d612812cec2"
+    },
+    {
+      "path": "crates/goose/src/hints/load_hints.rs",
+      "sha256": "be138dc7166f64d8df7b7783f91272ce7aa85d5f60e5653119911606e584f54c"
+    },
+    {
+      "path": "crates/goose/src/lib.rs",
+      "sha256": "33751ec141bd3503e8b7bee38c63d7b1de8121dda95cd2deabb6362324f8d819"
+    },
+    {
+      "path": "crates/goose/src/providers/mod.rs",
+      "sha256": "53b12c91947b0715e69d21ae645d92dc757c5c236d03088f9787e6a93509e911"
+    },
+    {
+      "path": "crates/goose/src/recipe/mod.rs",
+      "sha256": "a3a44044680ba30f447836d31d96f4cbf625683289625c2457ae90f0c6a56fe1"
+    },
+    {
+      "path": "crates/goose/src/recipe/template_recipe.rs",
+      "sha256": "9036da5bd839707870f0de623426170a699608054898490d0e691310d0f1b542"
+    },
+    {
+      "path": "crates/goose/src/recipe/validate_recipe.rs",
+      "sha256": "0a8cf69e5ffe7f6b9323d8637105d3abcd44b0f93fa109bece9b85e9a0f9697c"
+    },
+    {
+      "path": "crates/goose/src/scheduler/mod.rs",
+      "sha256": "acf890e7616252bafe03bdf83c0016da94551fcb84e7bff6f9f88093d91d3688"
+    },
+    {
+      "path": "crates/goose/src/session/session_manager.rs",
+      "sha256": "089428a6cc15875360c72a44a6b1220f729a4bb3dd6275321285870c223926c6"
+    },
+    {
+      "path": "crates/goose/src/skills/mod.rs",
+      "sha256": "6a59c9e9ebbf4553cdd8195347757be9e5e13a587b07f035775cb69c3f886a1b"
+    },
+    {
+      "path": "crates/goose/src/tool_inspection.rs",
+      "sha256": "291072d02fdd056dd5b087af196a949c137d0f8f143017e080c7f0e9760d72f5"
+    },
+    {
+      "path": "release-plz.toml",
+      "sha256": "8a10113740387166bbd397e67fa288c39d7f24392340fa368ec5ada848af144b"
+    },
+    {
+      "path": "ui/desktop/src/acp/acpConnection.ts",
+      "sha256": "0866bab65e8530c3293b3b6bfdb6d268719275070bdac93f68ac177c29e54392"
+    },
+    {
+      "path": "ui/desktop/src/acp/chatSessionController.ts",
+      "sha256": "0b842efb7a200bf747947ac469efed8df80937bb8b1c758cb6973e451e7b02fe"
+    },
+    {
+      "path": "ui/desktop/src/acp/chatSessionStore.ts",
+      "sha256": "36cb8eb07cab14c4068b214dd47f77f660f9d8c28bd58f6bf26719d620be4044"
+    },
+    {
+      "path": "ui/desktop/src/acp/sessionNotificationAdapter.ts",
+      "sha256": "28f2114b88feb5b5a4128ff213356d92dd2b5b50c1a12a79bf28bad10820d588"
+    },
+    {
+      "path": "ui/desktop/src/desktopFileAccess.ts",
+      "sha256": "2d407ede3bdc7b0e819707aa01c5960440b540491a6fd15a64bb8907258aa0a5"
+    },
+    {
+      "path": "ui/desktop/src/gooseServeLeaseRegistry.ts",
+      "sha256": "a52313eb021916b110b688d5ef615f325accf79e044df9ad199993f0dd4881de"
+    },
+    {
+      "path": "ui/desktop/src/main.ts",
+      "sha256": "4c7c74cb2ef411a726433b2578aee81301974fe10f8fb9180f692177f76a5567"
+    },
+    {
+      "path": "ui/desktop/src/preload.ts",
+      "sha256": "21251fdfd61f250c643b49b0af578203f76783e9dcce540155d82ab884caed79"
+    },
+    {
+      "path": "ui/desktop/src/utils/openExternalUrl.ts",
+      "sha256": "0a6e2c45e41f59890c284ad6cb3e3fdc7da46f0a76e7bbfb7cd7e645b53bcaa4"
+    },
+    {
+      "path": "ui/goose-acp-client/README.md",
+      "sha256": "c5cd60a97b554dd54786a6f3ed10c18a5fdf3d269d129d4134e0edddc19dc24c"
+    },
+    {
+      "path": "ui/goose-acp/README.md",
+      "sha256": "0be3a121ee91d7f011717ef1cc99bb3ad6a2667fc2ccd1cc02492832ba51bfd1"
+    }
+  ],
+  "excerpts": [
+    {
+      "path": "crates/goose/src/agents/state_machine/mod.rs",
+      "start": 72,
+      "end": 76,
+      "sha256": "904e3397bbbfdf77e3f4abb120228362f7a196da9bba4bf53ba0174d7d8ae305"
+    },
+    {
+      "path": "crates/goose-agent/src/machine.rs",
+      "start": 161,
+      "end": 179,
+      "sha256": "25485d15f685f6d0d0af0647c0fd9c5e27ef6df26ae6163d0c7bbb5c84a379a7"
+    },
+    {
+      "path": "crates/goose-agent/src/operation.rs",
+      "start": 49,
+      "end": 66,
+      "sha256": "3087a15a7fcb2bfa2e44c8d8052a19c73c438ca3915829fd23550c218ddd2081"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/session.rs",
+      "start": 119,
+      "end": 123,
+      "sha256": "90db2e8628cdcfeef28353a97a7e8e438d1e33d7cbae516a5314296a8f7839ba"
+    },
+    {
+      "path": "crates/goose-provider-types/src/conversation/message.rs",
+      "start": 133,
+      "end": 143,
+      "sha256": "22de9dba7093dd3965cd216a3f2ca6f390b7caac922de7724d4cfefffcbee60a"
+    },
+    {
+      "path": "crates/goose-provider-types/src/conversation.rs",
+      "start": 178,
+      "end": 187,
+      "sha256": "cadd3ce7826639f4b6d54dcca2f41b209e6852579c8da4e1f5a42c30888617b7"
+    },
+    {
+      "path": "crates/goose-agent/src/events.rs",
+      "start": 9,
+      "end": 18,
+      "sha256": "25955f2e56086b4fdae7b7590c1adfea36c81a56b61b5d67bf55d14d5529a6be"
+    },
+    {
+      "path": "crates/goose-provider-types/src/base.rs",
+      "start": 504,
+      "end": 538,
+      "sha256": "a0607834e4aeb5cefad55af185a2f1023a6fdac2178d360c3986fc2566d1c647"
+    },
+    {
+      "path": "crates/goose-provider-types/src/retry.rs",
+      "start": 71,
+      "end": 88,
+      "sha256": "a12688cc6e6d2f19b2a1b645c1790e40844798a0db9419e55271de826f157b83"
+    },
+    {
+      "path": "crates/goose/src/agents/extension_manager/mod.rs",
+      "start": 749,
+      "end": 771,
+      "sha256": "2a0fd5c2bf77f34a3faed5dd39486917f1c15af7b6636170245732680ddee05d"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/code_execution.rs",
+      "start": 657,
+      "end": 669,
+      "sha256": "709fba6732a10bc6ca7c8eef646612c1427fc2db745b18de51d62d5469cdc79a"
+    },
+    {
+      "path": "crates/goose-context-management/src/summarize.rs",
+      "start": 54,
+      "end": 71,
+      "sha256": "e7c906f27c58ce4c772913885dd3790f2e86a7cdf5888b3a57e7c5f59bc5ccfa"
+    },
+    {
+      "path": "crates/goose/src/context_mgmt/mod.rs",
+      "start": 366,
+      "end": 375,
+      "sha256": "6adce498de6c66786d59b680c98eda37e94909f582b870fe6c3b858571aa0a62"
+    },
+    {
+      "path": "crates/goose/src/session/session_manager.rs",
+      "start": 950,
+      "end": 958,
+      "sha256": "e3b8f1e8058ef18d0f41b532b55bce17b6fc55be243ff60cc90f709cc78729a6"
+    },
+    {
+      "path": "crates/goose-provider-types/src/goose_mode.rs",
+      "start": 22,
+      "end": 32,
+      "sha256": "2b59db873db6f29eb8ec1a27b037fa0f02e5ff42994008ec9eb2f8011c2158f1"
+    },
+    {
+      "path": "crates/goose/src/acp/transport/auth.rs",
+      "start": 9,
+      "end": 14,
+      "sha256": "7dec17248b1a0ee06bfe2efc23ac4d56330a2aedc7d740f54513e65ad160a5e3"
+    },
+    {
+      "path": "crates/goose/src/agents/state_machine/ops_retry.rs",
+      "start": 73,
+      "end": 86,
+      "sha256": "7056bbf9ac393d5ba4e729dd53df23adaed7c4600ef7854acc3168ccd72fe7ba"
+    },
+    {
+      "path": "ui/desktop/src/acp/acpConnection.ts",
+      "start": 32,
+      "end": 37,
+      "sha256": "d8ac5b3e86f93c187db0933794d6c02776794396e86b05db84ad15a21741caf6"
+    },
+    {
+      "path": "ui/desktop/src/acp/chatSessionStore.ts",
+      "start": 134,
+      "end": 137,
+      "sha256": "163e32721d0ace16b4e01c926c9ff4ca9ba4fbd138d1d921150eae6ff4dfe81c"
+    },
+    {
+      "path": "crates/goose-provider-types/src/conversation.rs",
+      "start": 95,
+      "end": 118,
+      "sha256": "0de30c6d12133be49164cc74e5659907a264f7b0e3048cf1cae97cbe7f95b82f"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/developer/edit.rs",
+      "start": 157,
+      "end": 178,
+      "sha256": "78ad0b5faa78f46bb3955b4a37469b2239bde6267631f84d53f4c0e841b34805"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/analyze/graph.rs",
+      "start": 232,
+      "end": 240,
+      "sha256": "9689a9839ec0cb6b25bf249737fecaa1a36e65a3b8f2362db5a2c24f76dd775a"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/analyze/graph.rs",
+      "start": 180,
+      "end": 199,
+      "sha256": "6afd993f639663c4e80a3a638ab1f77dcaaa26953f8b96798ab239a7675b086a"
+    },
+    {
+      "path": "crates/goose/src/agents/platform_extensions/code_execution.rs",
+      "start": 332,
+      "end": 354,
+      "sha256": "946e373d09240224cd79f2a50e3eb6da10786fe8fe1e0d6fc574b343e411ffbd"
+    },
+    {
+      "path": "crates/goose-agent/src/machine.rs",
+      "start": 14,
+      "end": 17,
+      "sha256": "4dda0b75f826d87267525479dab54a08775e4fa9bdfbfebf5aed06cb863e8cbd"
+    },
+    {
+      "path": "crates/goose/src/acp/server/dispatch.rs",
+      "start": 17,
+      "end": 20,
+      "sha256": "8a4b5ff7ea020a9e36e9120c1a146e15c49978abf0b90df85ef494806de07fea"
+    },
+    {
+      "path": "crates/goose-sdk-types/src/custom_requests.rs",
+      "start": 102,
+      "end": 108,
+      "sha256": "05df8456ad21194ca790ef115d82880dca69e24b47932d3dbf1ce0e4f9b87639"
+    }
+  ],
+  "custom_request_count": 111
+}

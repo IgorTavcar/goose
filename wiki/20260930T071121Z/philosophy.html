@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Observed principles, separated from promises about the product.">
+<meta name="color-scheme" content="light dark">
+<title>Design philosophy &amp; tradeoffs · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html" aria-current="page">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Design philosophy & tradeoffs</h1>
+<p class="deck">Observed principles, separated from promises about the product.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#local-ownership-and-replaceable-intelligence">Local ownership and replaceable intelligence</a>
+<a href="#a-small-kernel-with-explicit-policy">A small kernel with explicit policy</a>
+<a href="#the-conversation-is-both-evidence-and-control-state">The conversation is both evidence and control state</a>
+<a href="#human-history-and-model-context-are-different-products">Human history and model context are different products</a>
+<a href="#contracts-instead-of-vendor-assumptions">Contracts instead of vendor assumptions</a>
+<a href="#engineering-values-visible-in-contribution-rules">Engineering values visible in contribution rules</a>
+</nav>
+<section aria-labelledby="local-ownership-and-replaceable-intelligence">
+<h2 id="local-ownership-and-replaceable-intelligence">Local ownership and replaceable intelligence</h2>
+<p>The project presents Goose as a general-purpose agent running on the user’s machine, with desktop, CLI, and embedding surfaces. The same task machinery can work with multiple model providers and MCP extensions. Its philosophy, as inferred from that implementation, is to keep the agent’s orchestration and tools in an open runtime while allowing the source of intelligence to vary.</p>
+<p>Local execution does not mean every request stays offline. Native cloud providers send model requests to external services; remote extensions and ACP providers introduce their own boundaries. On-device inference is a distinct optional implementation. The architectural freedom lies in selecting those boundaries rather than hiding them.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/README.md#L1">README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-providers/README.md#L1">crates/goose-providers/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-local-inference/README.md#L1">crates/goose-local-inference/README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="a-small-kernel-with-explicit-policy">
+<h2 id="a-small-kernel-with-explicit-policy">A small kernel with explicit policy</h2>
+<p>The generic state machine owns ordered dispatch, effect identity, cancellation checks, and the reload/apply loop. It does not own Goose’s recipe model, permission settings, or SQL schema. Concrete operations contribute tools and prompt parts and return effects. This keeps “when does this behavior apply?” near the behavior itself, while the kernel remains reusable.</p>
+<p>The cost is ordering sensitivity. The first applicable operation wins. Moving compaction, approval, or turn limits can alter behavior even if each operation’s code is unchanged. Composition order therefore belongs to the specification and deserves review alongside operation implementations.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L1644">crates/goose/src/agents/agent.rs:1644</a>
+</p>
+</section>
+<section aria-labelledby="the-conversation-is-both-evidence-and-control-state">
+<h2 id="the-conversation-is-both-evidence-and-control-state">The conversation is both evidence and control state</h2>
+<p>State-machine decisions are largely reconstructed from history. Approval requests, confirmations, tool replies, errors, and operation notes make progress observable after rebuilding a pipeline. Notes record past actions, such as retry counts, rather than values an operation can compute again. This avoids a private loop counter becoming the only explanation of why the machine continued.</p>
+<p>This is conversation-derived control, not deterministic replay of external effects. Provider calls are nondeterministic; tools can mutate the world before their result is stored; runtime configuration and queues can change. Persisting an operation note improves recoverability but does not turn the entire process into a transactional workflow engine.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/operation.rs#L1">crates/goose-agent/src/operation.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_retry.rs#L1">crates/goose/src/agents/state_machine/ops_retry.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/session.rs#L1">crates/goose/src/agents/state_machine/session.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="human-history-and-model-context-are-different-products">
+<h2 id="human-history-and-model-context-are-different-products">Human history and model context are different products</h2>
+<p>A human needs an intelligible record of what happened. A model needs a bounded request that fits its protocol and context limit. Goose keeps user-visible and agent-visible projections, with content-level audience annotations as well as message-level metadata. Full compaction hides old history from the agent without erasing the transcript shown to the user, then adds a hidden summary and continuation.</p>
+<p>That design permits a long-running session to remain inspectable after compaction. It also makes visibility rules consequential: an implementation that concatenates all text can expose private reasoning or feed display-only notifications back into the model. The projection helpers are semantic boundaries, not cosmetic filters.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L1">crates/goose-provider-types/src/conversation.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L1">crates/goose/src/context_mgmt/mod.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="contracts-instead-of-vendor-assumptions">
+<h2 id="contracts-instead-of-vendor-assumptions">Contracts instead of vendor assumptions</h2>
+<p>Providers share a streaming contract and normalized error enum. Model discovery and canonical metadata handle names and capabilities that vary by service. Declarative providers reuse existing engines for compatible endpoints, avoiding a separate handwritten adapter for each brand. The tradeoff is that compatibility remains a live service property: a JSON definition alone cannot prove that a backend accepts tools or follows a wire format.</p>
+<p>The project’s release manifest distinguishes the published GDK set from internal application APIs. Public Rust visibility inside <code>goose</code> should not be confused with a stable embedding contract; custom ACP methods are explicitly marked unstable in their namespace.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/release-plz.toml#L1">release-plz.toml:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/base.rs#L1">crates/goose-provider-types/src/base.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1">crates/goose-sdk-types/src/custom_requests.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="engineering-values-visible-in-contribution-rules">
+<h2 id="engineering-values-visible-in-contribution-rules">Engineering values visible in contribution rules</h2>
+<p>Repository instructions favor explicit types, straightforward errors, self-explanatory names, and comments that explain unusual logic. They also require parity during the loop migration. These rules support a design where subtle behaviors—signed reasoning boundaries, write-lock timing, cancellation cleanup—are documented where they matter, while ordinary getters and constructors stay simple.</p>
+<aside class="callout">The evaluative words in this wiki, including “brilliant,” are editorial judgments based on inspected code. They are not benchmark results or upstream marketing claims.</aside>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="architecture.html">← Architecture & system map</a>
+<a href="agent.html">Agent loop & state-machine specification →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

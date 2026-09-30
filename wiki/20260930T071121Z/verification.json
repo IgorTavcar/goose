@@ -1,0 +1,51 @@
+{
+  "verified_at_utc": "2026-09-30T07:42:15.521106+00:00",
+  "source_revision": "ac15f938151bb8c0efd93ed9c2c1cf61298934bf",
+  "structural": {
+    "status": "passed",
+    "pages": 16,
+    "local_links": 534,
+    "source_links": 332,
+    "source_files": 96,
+    "exact_excerpts": 27,
+    "declared_client_to_agent_methods": 111,
+    "errors": []
+  },
+  "javascript_syntax": {
+    "status": "passed",
+    "runtime": "node --check"
+  },
+  "browser": {
+    "status": "passed",
+    "engine": "Chromium",
+    "version": "153.0.8010.12",
+    "checks": [
+      "All 16 pages loaded over real local HTTP in Chromium; titles, active navigation, fragments, and desktop overflow passed.",
+      "Topic search matches article content, handles empty results, and restores all 15 topic cards.",
+      "Index card and next-page navigation passed.",
+      "390px mobile viewport passed for overview, API table, algorithms and context in light and dark themes.",
+      "Print media hides navigation and leaves article content.",
+      "JavaScript-disabled reading and topic navigation remain available.",
+      "file:// browsing works without a server, remote script or CDN."
+    ],
+    "page_errors": []
+  },
+  "live_boundaries": [
+    "GitHub Git transport: repository cloned from the requested origin.",
+    "Local Python HTTP server to real Chromium: all wiki pages and assets served and rendered."
+  ],
+  "simulated_boundaries": [],
+  "unverified_integrations": [
+    "External LLM provider APIs",
+    "Third-party MCP services",
+    "Remote ACP provider runtimes",
+    "Local model inference runtimes",
+    "Roaming peers and relays"
+  ],
+  "integration_scope": "Static documentation change. No mock, emulator, replay, health check or rendering test is counted as live agent/provider integration validation.",
+  "rust_build_tests_clippy": "Not run: no Rust source changes and repository instructions restrict these runs to a user request.",
+  "rust_format": {
+    "status": "passed",
+    "command": "cargo fmt --all -- --check"
+  }
+}

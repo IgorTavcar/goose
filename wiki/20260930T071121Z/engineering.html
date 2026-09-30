@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Version boundaries, source provenance, maintenance, and honest validation scope.">
+<meta name="color-scheme" content="light dark">
+<title>Specifications, verification &amp; reading guide · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html" aria-current="page">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Specifications, verification & reading guide</h1>
+<p class="deck">Version boundaries, source provenance, maintenance, and honest validation scope.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#snapshot-and-scope">Snapshot and scope</a>
+<a href="#specifications-at-a-glance">Specifications at a glance</a>
+<a href="#verification-boundaries-for-this-documentation-change">Verification boundaries for this documentation change</a>
+<a href="#maintenance-without-erasing-the-snapshot">Maintenance without erasing the snapshot</a>
+<a href="#suggested-reading-paths">Suggested reading paths</a>
+<a href="#repository-commands-are-scoped-to-the-kind-of-change">Repository commands are scoped to the kind of change</a>
+</nav>
+<section aria-labelledby="snapshot-and-scope">
+<h2 id="snapshot-and-scope">Snapshot and scope</h2>
+<p>This wiki describes repository commit <code>ac15f938151bb8c0efd93ed9c2c1cf61298934bf</code>, cloned from IgorTavcar/goose. The upstream repository named in Cargo metadata is aaif-goose/goose. Workspace metadata at this commit is version 1.53.0, Rust edition 2021, rust-version 1.94.1. These values describe the source tree; they are not claims about a binary installed on this machine or the latest release on a package registry.</p>
+<p>Each code figure is copied verbatim from the local source snapshot and has an immutable GitHub line link. Each interpretive section links to the code or project instructions supporting it. Descriptions of architecture patterns and “brilliant” selections are editorial analysis. No external provider behavior or benchmark is asserted from inspection alone.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/Cargo.toml#L1">Cargo.toml:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/README.md#L1">README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="specifications-at-a-glance">
+<h2 id="specifications-at-a-glance">Specifications at a glance</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Contract</th>
+<th scope="col">Key invariant</th>
+<th scope="col">Where to read</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Machine</td>
+<td>First applicable operation wins; reload after effects; yield is explicit.</td>
+<td>agent.html</td>
+</tr>
+<tr>
+<td>Provider stream</td>
+<td>Partial text, fully assembled tools, optional usage; errors typed.</td>
+<td>providers.html</td>
+</tr>
+<tr>
+<td>Messages</td>
+<td>Tool IDs correlate requests/results; visibility and audience remain separate.</td>
+<td>messages.html</td>
+</tr>
+<tr>
+<td>Approval</td>
+<td>Deny dominates; requests published after persistence.</td>
+<td>security.html</td>
+</tr>
+<tr>
+<td>Context</td>
+<td>Automatic ratio strictly exceeds threshold in (0,1); summaries preserve transcript.</td>
+<td>context.html</td>
+</tr>
+<tr>
+<td>Tool discovery</td>
+<td>Normally extension__tool; first-class unprefixed exceptions and ownership metadata.</td>
+<td>extensions.html</td>
+</tr>
+<tr>
+<td>Storage</td>
+<td>WAL, foreign keys, write reservations for relevant mutations.</td>
+<td>storage.html</td>
+</tr>
+<tr>
+<td>ACP</td>
+<td>JSON-RPC over stdio or /acp HTTP/WebSocket; custom methods unstable.</td>
+<td>apis.html</td>
+</tr>
+<tr>
+<td>Recipe retry</td>
+<td>Reset through kickoff; attempt note on surviving kickoff.</td>
+<td>recipes.html</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section aria-labelledby="verification-boundaries-for-this-documentation-change">
+<h2 id="verification-boundaries-for-this-documentation-change">Verification boundaries for this documentation change</h2>
+<p>The change adds static HTML documentation, styles, search/navigation JavaScript, a provenance manifest, and a verification script. Structural checks verify local links and fragments, balanced HTML, page landmarks, exact excerpts, hashes of referenced source files, and API inventory uniqueness. Browser checks, when available, exercise page loading and navigation/search at a real local HTTP boundary. The recorded verification report states what actually ran.</p>
+<p>Goose provider inference, third-party MCP APIs, remote ACP harnesses, local model inference, and roaming are not exercised merely by rendering this wiki. No mocks, replay recordings, or health checks are counted as those integrations. Their live behavior remains unverified by this documentation task. Revalidate the affected real boundary when API, runtime, credentials, or external service behavior changes.</p>
+<p>See <a href="verification.json">verification.json</a> for executed checks and <a href="manifest.json">manifest.json</a> for source and excerpt provenance.</p>
+</section>
+<section aria-labelledby="maintenance-without-erasing-the-snapshot">
+<h2 id="maintenance-without-erasing-the-snapshot">Maintenance without erasing the snapshot</h2>
+<p>This timestamp directory is a source-grounded edition. After code changes, create a new timestamped edition or explicitly update the provenance and descriptions together. Do not silently point line links to main: readers would lose the ability to inspect the code that justified the prose. Reuse valid integration evidence only while the relevant environment and service contracts remain unchanged.</p>
+<p>A machine-generated inventory supports completeness but does not replace semantic review. In particular, compare both loops during migration, validate enum serialization against the exact attributes, inspect feature gates before recommending a command, and distinguish declared methods from enabled handlers.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/release-plz.toml#L1">release-plz.toml:1</a>
+</p>
+</section>
+<section aria-labelledby="suggested-reading-paths">
+<h2 id="suggested-reading-paths">Suggested reading paths</h2>
+<ul>
+<li>New contributor: <a href="architecture.html">architecture</a> → <a href="philosophy.html">philosophy</a> → <a href="agent.html">agent</a> → <a href="patterns.html">patterns</a>.</li>
+<li>Provider or SDK author: <a href="messages.html">messages</a> → <a href="providers.html">providers</a> → <a href="apis.html">APIs</a> → <a href="context.html">context</a>.</li>
+<li>Tool or extension author: <a href="extensions.html">extensions</a> → <a href="security.html">security</a> → <a href="algorithms.html">algorithms</a>.</li>
+<li>Client author: <a href="apis.html">protocol</a> → <a href="desktop.html">client lifecycle</a> → <a href="storage.html">storage</a>.</li>
+</ul>
+</section>
+<section aria-labelledby="repository-commands-are-scoped-to-the-kind-of-change">
+<h2 id="repository-commands-are-scoped-to-the-kind-of-change">Repository commands are scoped to the kind of change</h2>
+<p>Repository instructions describe Hermit activation, cargo fmt, and feature-specific build/test commands. They say to run compilation/test/clippy only when requested. This HTML-only change does not require rebuilding the agent or re-running unrelated recorded provider scenarios. The wiki validator is the affected-artifact check; it does not imply Rust or live-service integration validation.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="apis.html">← API & protocol reference</a>
+<a href="index.html">Back to the overview ↑</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Electron boundaries, ACP connection recovery, and session presentation.">
+<meta name="color-scheme" content="light dark">
+<title>Desktop, CLI &amp; client lifecycle · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html" aria-current="page">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Desktop, CLI & client lifecycle</h1>
+<p class="deck">Electron boundaries, ACP connection recovery, and session presentation.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#shared-runtime-different-experiences">Shared runtime, different experiences</a>
+<a href="#connection-single-flight-and-generations">Connection single flight and generations</a>
+<a href="#session-store-and-notification-adapters">Session store and notification adapters</a>
+<a href="#backend-leases-and-process-privileges">Backend leases and process privileges</a>
+<a href="#cli-modes-and-feature-gates">CLI modes and feature gates</a>
+</nav>
+<section aria-labelledby="shared-runtime-different-experiences">
+<h2 id="shared-runtime-different-experiences">Shared runtime, different experiences</h2>
+<p>The CLI main enters command parsing and session machinery in goose-cli. The desktop main process manages windows, backend processes, secrets, readiness, and IPC. React renders a client-side session view. Both ultimately use the same Rust agent facilities, so the interfaces need not implement their own model/tool loop.</p>
+<p>Desktop obtains an ACP URL from the preload-exposed Electron API and creates a WebSocket stream. It composes the standard ACP SDK with Goose extension methods from @aaif/goose-acp-client. The TypeScript package deliberately leaves executable resolution and process lifecycle to its caller; the separate launcher package handles launching for other consumers.</p>
+<figure class="flow">
+<div role="img" aria-label="Desktop separates privileged process control from conversation presentation.">
+<span class="flow-box">Electron main</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">Preload bridge</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">React + ACP client</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">WebSocket /acp</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">Rust ACP server</span>
+</div>
+<figcaption>Desktop separates privileged process control from conversation presentation.</figcaption>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/main.ts#L1">ui/desktop/src/main.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/preload.ts#L1">ui/desktop/src/preload.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/acp/acpConnection.ts#L1">ui/desktop/src/acp/acpConnection.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/goose-acp-client/README.md#L1">ui/goose-acp-client/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/goose-acp/README.md#L1">ui/goose-acp/README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="connection-single-flight-and-generations">
+<h2 id="connection-single-flight-and-generations">Connection single flight and generations</h2>
+<p>acpConnection keeps currentConnection and pendingConnection separately. Concurrent callers reuse the pending promise, avoiding several initialization attempts for one backend. Recovery increments a generation, clears current/pending state, closes the old connection, and begins another attempt. Completion handlers only update recovery state when their generation remains current.</p>
+<p>This is a lightweight defense against stale async work: an older attempt must not overwrite a newer connection after system resume or reconnection. Initialization has a 10000 ms timeout; reconnection delay starts at 500 ms and has a 30000 ms cap. Backend-exited errors are distinguished from reconnectable failures. The generation is a lifecycle version, not a session ID.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/acp/acpConnection.ts#L32">ui/desktop/src/acp/acpConnection.ts:32</a> · lines 32–37</figcaption>
+<pre><code data-source="ui/desktop/src/acp/acpConnection.ts" data-start="32" data-end="37">let currentConnection: AcpConnection | null = null;
+let pendingConnection: Promise&lt;AcpConnection&gt; | null = null;
+let connectionGeneration = 0;
+let recovering = false;
+const recoveryListeners = new Set&lt;AcpRecoveryListener&gt;();
+</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/acp/acpConnection.ts#L1">ui/desktop/src/acp/acpConnection.ts:1</a>
+</p>
+</section>
+<section aria-labelledby="session-store-and-notification-adapters">
+<h2 id="session-store-and-notification-adapters">Session store and notification adapters</h2>
+<p>The chat store keeps a map per session and listeners per session, with adapters that convert standard ACP and Goose notifications into UI messages, tool events, permissions, elicitations, token state, and progress. Prompt attempt IDs, active run IDs, and cancellation restoration state guard transitions when replies arrive after a newer action.</p>
+<p>During history replay, reading a deep clone of the growing message array for each notification would produce cumulative quadratic work. The store reuses the last published snapshot while LoadingConversation is active. This is a targeted optimization at the read path rather than an assumption that all live state can be reused without invalidation.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/acp/chatSessionStore.ts#L134">ui/desktop/src/acp/chatSessionStore.ts:134</a> · lines 134–137</figcaption>
+<pre><code data-source="ui/desktop/src/acp/chatSessionStore.ts" data-start="134" data-end="137">    if (entry.chatState === ChatState.LoadingConversation &amp;&amp; entry.lastSnapshot) {
+      return entry.lastSnapshot;
+    }
+    return snapshotFromEntry(entry);</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/acp/sessionNotificationAdapter.ts#L1">ui/desktop/src/acp/sessionNotificationAdapter.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/acp/chatSessionController.ts#L1">ui/desktop/src/acp/chatSessionController.ts:1</a>
+</p>
+</section>
+<section aria-labelledby="backend-leases-and-process-privileges">
+<h2 id="backend-leases-and-process-privileges">Backend leases and process privileges</h2>
+<p>The desktop startup path can own a launched serve process or use an external backend. GooseServeLeaseRegistry centralizes backend ownership across windows, so closing one consumer is not equivalent to blindly killing a process still used by another. Startup readiness and TLS fingerprint checks provide evidence that the selected endpoint is the intended backend.</p>
+<p>BrowserWindow configurations disable Node integration and enable context isolation. The preload layer exposes an intentional IPC API instead of granting raw Node primitives to React. File access and external URL opening have dedicated helpers; these are important review surfaces whenever a rendered tool result or link can ask the application to open local or remote content.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/main.ts#L1">ui/desktop/src/main.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/gooseServeLeaseRegistry.ts#L1">ui/desktop/src/gooseServeLeaseRegistry.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/preload.ts#L1">ui/desktop/src/preload.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/desktopFileAccess.ts#L1">ui/desktop/src/desktopFileAccess.ts:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/utils/openExternalUrl.ts#L1">ui/desktop/src/utils/openExternalUrl.ts:1</a>
+</p>
+</section>
+<section aria-labelledby="cli-modes-and-feature-gates">
+<h2 id="cli-modes-and-feature-gates">CLI modes and feature gates</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Command family</th>
+<th scope="col">Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>session / run</td>
+<td>Interactive terminal and instructed/recipe task runs.</td>
+</tr>
+<tr>
+<td>acp</td>
+<td>Agent server over stdio.</td>
+</tr>
+<tr>
+<td>serve</td>
+<td>ACP over HTTP/WebSocket; defaults host=127.0.0.1, port=3284; acp-http feature.</td>
+</tr>
+<tr>
+<td>mcp</td>
+<td>Run a packaged server when bundled-mcp is enabled.</td>
+</tr>
+<tr>
+<td>configure / info / doctor</td>
+<td>Settings and diagnostics; info --check tests the provider connection.</td>
+</tr>
+<tr>
+<td>recipe / skills / plugin / schedule</td>
+<td>Task and capability administration.</td>
+</tr>
+<tr>
+<td>roam</td>
+<td>Optional peer transport; roaming feature.</td>
+</tr>
+<tr>
+<td>review / term / local-models</td>
+<td>Specialized workflows and local model management.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A command’s presence depends on Cargo features. Read clap definitions for authoritative flag names and defaults; examples from older HTTP/OpenAPI generations can target a different architecture.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-cli/src/cli.rs#L1">crates/goose-cli/src/cli.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-cli/src/main.rs#L1">crates/goose-cli/src/main.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="recipes.html">← Recipes, skills & agent orchestration</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

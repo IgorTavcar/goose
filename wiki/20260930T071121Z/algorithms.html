@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Step selection, streaming, edit safety, graph traversal, caching, and runtime cleanup.">
+<meta name="color-scheme" content="light dark">
+<title>Important algorithms: detailed walkthroughs · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html" aria-current="page">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Important algorithms: detailed walkthroughs</h1>
+<p class="deck">Step selection, streaming, edit safety, graph traversal, caching, and runtime cleanup.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#ordered-re-entry-is-an-interpreter">Ordered re-entry is an interpreter</a>
+<a href="#signed-reasoning-coalescence">Signed reasoning coalescence</a>
+<a href="#unique-match-file-editing">Unique-match file editing</a>
+<a href="#building-a-heuristic-call-graph">Building a heuristic call graph</a>
+<a href="#bounded-breadth-first-path-traversal">Bounded breadth-first path traversal</a>
+<a href="#order-independent-configuration-hashing">Order-independent configuration hashing</a>
+<a href="#cancellation-must-clean-up-both-runtimes">Cancellation must clean up both runtimes</a>
+<a href="#other-algorithms-worth-following">Other algorithms worth following</a>
+</nav>
+<section aria-labelledby="ordered-re-entry-is-an-interpreter">
+<h2 id="ordered-re-entry-is-an-interpreter">Ordered re-entry is an interpreter</h2>
+<p>The machine acts like an interpreter over conversation state: its ordered operation list is the program, applicability predicates select the next instruction, and effects change the persisted state on which the next pass operates. Restarting from the top after each application gives new steering, budget checks, and context policy another chance before inference. With K steps and contributions totaling T tools, a single inference pass includes O(K+T) dispatch/discovery bookkeeping, excluding operation work and awaits. Repeated history scans add their own cost.</p>
+<p>Trace: a user kickoff makes inference applicable; inference appends tool calls; the next pass finds approval work; another pass executes approved calls; a matching result makes them answered; inference then consumes the results. A terminal assistant response makes completion/retry/stop predicates meaningful. This trace explains why operation ordering is behavior.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_tool_approval.rs#L1">crates/goose/src/agents/state_machine/ops_tool_approval.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L1">crates/goose/src/agents/state_machine/ops_toolcalling.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="signed-reasoning-coalescence">
+<h2 id="signed-reasoning-coalescence">Signed reasoning coalescence</h2>
+<p>Consider deltas Thinking("A", ""), Thinking("B", ""), Thinking("", "sig1"). The unsigned accumulator appends A and B and adopts sig1 at the close. Now Thinking("C", "") begins a new block because the prior block is signed. Thinking("D", "sig2") closes that second block. Merging all five into one block would attach a signature to content the provider did not sign.</p>
+<p>The merge guard also checks incoming content.len()==1. A chunk containing a complete signed reasoning block plus ordinary text is a structured unit rather than a raw delta; its first block must not absorb an earlier incomplete reasoning block. Text merging separately requires the same audience. These guards protect protocol meaning even when concatenation would look visually plausible.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L95">crates/goose-provider-types/src/conversation.rs:95</a> · lines 95–118</figcaption>
+<pre><code data-source="crates/goose-provider-types/src/conversation.rs" data-start="95" data-end="118">                    Some(MessageContentBlock::Thinking(ref mut last)),
+                    Some(MessageContentBlock::Thinking(new)),
+                ) if message.content.len() == 1
+                    &amp;&amp; (last.signature.is_empty() || new.signature == last.signature) =&gt;
+                {
+                    // Merge cases:
+                    //   - `last` is still unsigned (block in progress) — append
+                    //     and adopt `new.signature` if it&#x27;s the closing delta.
+                    //   - signatures match — same block continuing.
+                    // An unsigned delta arriving after a signed block belongs
+                    // to the next block (signature-at-end streams emit the
+                    // first text of block N+1 before its signature), so the
+                    // outer match arm falls through to push it separately.
+                    last.thinking.push_str(&amp;new.thinking);
+                    if !new.signature.is_empty() {
+                        last.signature = new.signature.clone();
+                    }
+                }
+                (_, _) =&gt; {
+                    last.content.extend(message.content);
+                }
+            }
+        } else {
+            self.0.push(message);</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/base.rs#L404">crates/goose-provider-types/src/base.rs:404</a>
+</p>
+</section>
+<section aria-labelledby="unique-match-file-editing">
+<h2 id="unique-match-file-editing">Unique-match file editing</h2>
+<p>The developer edit tool reads the file, finds exact matches of before, and branches on cardinality. Zero matches returns an error with similar context and a limited file preview. Exactly one applies replacen(...,1). More than one returns an ambiguity error with locations for the first two and a count of additional matches. No guessed occurrence is modified.</p>
+<p>Example: before="return Ok(())" in a file containing three such lines is rejected. Adding the surrounding function context makes the intended occurrence unique. This is an effective algorithm for model-generated edits because ambiguity becomes actionable feedback rather than silent corruption. It is an exact byte-string replacement, not an AST-aware edit; overlapping-match semantics and empty strings follow Rust’s match_indices behavior. File write occurs after the read and is not an atomic compare-and-swap against concurrent writers.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/developer/edit.rs#L157">crates/goose/src/agents/platform_extensions/developer/edit.rs:157</a> · lines 157–178</figcaption>
+<pre><code data-source="crates/goose/src/agents/platform_extensions/developer/edit.rs" data-start="157" data-end="178">pub fn string_replace(content: &amp;str, before: &amp;str, after: &amp;str) -&gt; Result&lt;String, String&gt; {
+    let matches: Vec&lt;_&gt; = content.match_indices(before).collect();
+
+    match matches.len() {
+        0 =&gt; {
+            let suggestion = find_similar_context(content, before);
+            let mut msg = &quot;No match found for the specified text.&quot;.to_string();
+            if let Some(hint) = suggestion {
+                msg.push_str(&amp;format!(&quot;\n\nDid you mean:\n```\n{}\n```&quot;, hint));
+            }
+            let preview = build_file_preview(content, NO_MATCH_PREVIEW_LINES);
+            msg.push_str(&amp;format!(&quot;\n\nFile preview:\n```\n{}\n```&quot;, preview));
+            Err(msg)
+        }
+        1 =&gt; Ok(content.replacen(before, after, 1)),
+        n =&gt; {
+            let mut msg = format!(
+                &quot;Found {} matches. Please provide more context to identify a unique match:\n&quot;,
+                n
+            );
+
+            for (i, (pos, _)) in matches.iter().enumerate().take(2) {</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/developer/edit.rs#L1">crates/goose/src/agents/platform_extensions/developer/edit.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="building-a-heuristic-call-graph">
+<h2 id="building-a-heuristic-call-graph">Building a heuristic call graph</h2>
+<p>Each node is keyed by (file path, symbol name, definition line). The line distinguishes same-named methods in one file. The builder registers function/class nodes and a module pseudo-node, indexes names across files, and sorts definition lines for each (path,name). Caller resolution uses binary search to pick the greatest definition line ≤ the call’s line; missing callers fall back to the module node.</p>
+<p>Callee resolution strips Rust-style scope prefixes, prefers same-file matches, and when ambiguous chooses the closest definition by line distance. Cross-file matches are limited to the same language and can produce several candidates. Both incoming and outgoing adjacency maps use sets. This is source navigation based on syntax/name heuristics, not compiler name resolution: imports, overloads, runtime dispatch, and scope nesting can still yield false positives or omissions.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/analyze/graph.rs#L232">crates/goose/src/agents/platform_extensions/analyze/graph.rs:232</a> · lines 232–240</figcaption>
+<pre><code data-source="crates/goose/src/agents/platform_extensions/analyze/graph.rs" data-start="232" data-end="240">        let line = match lines.binary_search(&amp;call.line) {
+            Ok(idx) =&gt; lines[idx],
+            Err(0) =&gt; return None, // call is before any definition — shouldn&#x27;t happen
+            Err(idx) =&gt; lines[idx - 1],
+        };
+        Some((analysis.path.clone(), caller_name.clone(), line))
+    } else {
+        None
+    }</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/analyze/parser.rs#L1">crates/goose/src/agents/platform_extensions/analyze/parser.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/analyze/graph.rs#L1">crates/goose/src/agents/platform_extensions/analyze/graph.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="bounded-breadth-first-path-traversal">
+<h2 id="bounded-breadth-first-path-traversal">Bounded breadth-first path traversal</h2>
+<p>For incoming or outgoing queries, the graph finds all nodes named by the requested symbol and seeds a VecDeque with one-hop paths. Each iteration extends one path, not merely one global visited node. A per-path set prevents cycles while allowing separate routes to the same node to survive. Paths end at requested depth, leaves, or a point with no allowable extension.</p>
+<p>Depth is clamped to 32 and the path budget is 2000. Without bounds, path enumeration can grow exponentially even in an acyclic graph. Global visited-node BFS would be cheaper but would erase alternative call chains; per-path cycle checking is the deliberate tradeoff. Returned ordering can reflect HashMap/HashSet iteration, so callers should not treat it as a stable ranking. A path-budget limit is also not a semantic “top 2000 most important chains.”</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/analyze/graph.rs#L180">crates/goose/src/agents/platform_extensions/analyze/graph.rs:180</a> · lines 180–199</figcaption>
+<pre><code data-source="crates/goose/src/agents/platform_extensions/analyze/graph.rs" data-start="180" data-end="199">            // Cycle detection: don&#x27;t revisit nodes already in this path
+            let visited: HashSet&lt;&amp;NodeKey&gt; = path.iter().collect();
+
+            match edges.get(tip) {
+                Some(neighbors) =&gt; {
+                    let mut extended = false;
+                    for neighbor in neighbors {
+                        if !visited.contains(neighbor) {
+                            if chains.len() + queue.len() &gt;= MAX_CALL_GRAPH_PATHS {
+                                break;
+                            }
+                            let mut new_path = path.clone();
+                            new_path.push(neighbor.clone());
+                            queue.push_back((new_path, d + 1));
+                            extended = true;
+                        }
+                    }
+                    if !extended {
+                        chains.push(self.to_chain_links(&amp;path));
+                    }</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/analyze/graph.rs#L1">crates/goose/src/agents/platform_extensions/analyze/graph.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="order-independent-configuration-hashing">
+<h2 id="order-independent-configuration-hashing">Order-independent configuration hashing</h2>
+<p>CodeModeState hashes JSON serializations sorted lexically. If discovery produces [toolA,toolB] on one pass and [toolB,toolA] on another, the same sequence reaches the hasher. get_code_mode first checks under a read lock, then double checks under a write lock before constructing a replacement. This keeps cache reuse aligned to capability content rather than incidental enumeration order.</p>
+<p>DefaultHasher is a local cache key, not a cryptographic identity or a persisted compatibility token. Hash collisions are theoretically possible. JSON serialization and the callback configuration fields define what changes invalidate this cache; an external server changing behavior without changing advertised configuration is outside the key.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/code_execution.rs#L1">crates/goose/src/agents/platform_extensions/code_execution.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="cancellation-must-clean-up-both-runtimes">
+<h2 id="cancellation-must-clean-up-both-runtimes">Cancellation must clean up both runtimes</h2>
+<p>A Deno/PCTX task runs in a current-thread runtime inside spawn_blocking, while its tool callbacks can schedule work on the main Tokio runtime. Returning from a timeout without cancelling dispatch leaves callback work alive. Goose cancels a separate dispatch token and drains the pinned task future with a bounded timeout before returning a cancellation or timeout error. The callback bridge also has a guard for abandoned work.</p>
+<p>This arrangement addresses cross-runtime lifetime mismatch. It does not make synchronous, uncooperative native work preemptible in general. A timeout is a lifecycle request with bounded cleanup, not a mathematical proof that every external operation stopped immediately.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/code_execution.rs#L332">crates/goose/src/agents/platform_extensions/code_execution.rs:332</a> · lines 332–354</figcaption>
+<pre><code data-source="crates/goose/src/agents/platform_extensions/code_execution.rs" data-start="332" data-end="354">                _ = cancellation_token.cancelled() =&gt; {
+                    dispatch_token.cancel();
+                    let _ = tokio::time::timeout(
+                        DISPATCH_DRAIN_TIMEOUT,
+                        &amp;mut task_future,
+                    ).await;
+                    Err(&quot;Execution cancelled&quot;.to_string())
+                }
+                _ = tokio::time::sleep(timeout) =&gt; {
+                    dispatch_token.cancel();
+                    let _ = tokio::time::timeout(
+                        DISPATCH_DRAIN_TIMEOUT,
+                        &amp;mut task_future,
+                    ).await;
+                    Err(format!(
+                        &quot;Execution timed out after {} seconds&quot;,
+                        timeout.as_secs()
+                    ))
+                }
+                result = &amp;mut task_future =&gt; result,
+            }
+        })
+    })</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/platform_extensions/code_execution.rs#L1">crates/goose/src/agents/platform_extensions/code_execution.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="other-algorithms-worth-following">
+<h2 id="other-algorithms-worth-following">Other algorithms worth following</h2>
+<ul>
+<li>
+<a href="context.html">Compaction</a>: threshold arithmetic, center-out removal, protected user kickoff, and oldest-pair batches.</li>
+<li>
+<a href="providers.html">Provider retry</a>: capped exponential delay with post-cap jitter, rate-limit override, and one-time credential refresh.</li>
+<li>
+<a href="security.html">Approval</a>: call-ID-indexed state reconstruction and restrictive decision composition.</li>
+<li>
+<a href="storage.html">Storage</a>: write reservation before read-modify-write, cross-instance initialization, and persistence-before-approval publication.</li>
+<li>
+<a href="desktop.html">Desktop</a>: promise single flight, generation guards, and snapshot reuse during replay.</li>
+</ul>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="desktop.html">← Desktop, CLI & client lifecycle</a>
+<a href="patterns.html">Brilliant code & design patterns →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

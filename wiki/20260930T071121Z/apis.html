@@ -1,0 +1,1110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="ACP transport, custom methods, Rust extension points, and language bindings.">
+<meta name="color-scheme" content="light dark">
+<title>API &amp; protocol reference · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html" aria-current="page">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>API & protocol reference</h1>
+<p class="deck">ACP transport, custom methods, Rust extension points, and language bindings.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#which-api-should-a-caller-use">Which API should a caller use?</a>
+<a href="#acp-transport-specification">ACP transport specification</a>
+<a href="#an-exact-goose-request-envelope">An exact Goose request envelope</a>
+<a href="#server-to-client-extensions-and-notifications">Server-to-client extensions and notifications</a>
+<a href="#rust-operation-and-runtime-contracts">Rust operation and runtime contracts</a>
+<a href="#uniffi-binding-contract">UniFFI binding contract</a>
+<a href="#complete-declared-client-to-agent-custom-request-inventory">Complete declared client-to-agent custom request inventory</a>
+</nav>
+<section aria-labelledby="which-api-should-a-caller-use">
+<h2 id="which-api-should-a-caller-use">Which API should a caller use?</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Caller</th>
+<th scope="col">Surface</th>
+<th scope="col">Stability scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Desktop or external agent client</td>
+<td>ACP standard methods plus Goose extension methods</td>
+<td>ACP schema and negotiated capabilities; custom _goose/unstable namespace may evolve.</td>
+</tr>
+<tr>
+<td>Rust provider author</td>
+<td>goose-provider-types::base::Provider</td>
+<td>Published GDK contract at the package version.</td>
+</tr>
+<tr>
+<td>Rust agent author</td>
+<td>goose-agent operations, inference, runtime traits</td>
+<td>Published GDK contract; host supplies composition and persistence.</td>
+</tr>
+<tr>
+<td>Python / Kotlin application</td>
+<td>goose-sdk UniFFI</td>
+<td>Feature-gated bindings for providers, streaming, completions, compaction.</td>
+</tr>
+<tr>
+<td>Tool server author</td>
+<td>MCP through rmcp contracts</td>
+<td>Server capabilities, schemas, and transport negotiation.</td>
+</tr>
+<tr>
+<td>Application contributor</td>
+<td>goose internal pub functions</td>
+<td>Internal APIs can change; pub alone does not promise compatibility.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/release-plz.toml#L1">release-plz.toml:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/README.md#L1">crates/goose-sdk/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/goose-acp-client/README.md#L1">ui/goose-acp-client/README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="acp-transport-specification">
+<h2 id="acp-transport-specification">ACP transport specification</h2>
+<p>
+<code>goose acp</code> serves stdio; <code>goose serve</code> exposes HTTP/WebSocket ACP. The bare router is documented as POST/GET/DELETE on <code>/acp</code>. Standalone auxiliary GET <code>/health</code> and <code>/status</code> return “ok.” The serve command defaults to 127.0.0.1:3284, with optional TLS and configured authorization/origin behavior. This API uses JSON-RPC methods over ACP rather than a REST endpoint per agent operation.</p>
+<p>Initialize establishes protocol and client capabilities before pipelined new-session operations. Session new/load/list/fork, prompt, cancellation, and session configuration dispatch map to typed ACP requests. Prompt progress comes through notifications before the final response. Agent→client permission and elicitation requests require replies; they are not ordinary fire-and-forget messages.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/transport/mod.rs#L1">crates/goose/src/acp/transport/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-cli/src/cli.rs#L1">crates/goose-cli/src/cli.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/dispatch.rs#L1">crates/goose/src/acp/server/dispatch.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/elicitation.rs#L1">crates/goose/src/acp/server/elicitation.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="an-exact-goose-request-envelope">
+<h2 id="an-exact-goose-request-envelope">An exact Goose request envelope</h2>
+<p>The following is an illustrative JSON-RPC request using the inspected GetToolsRequest fields. The session must already exist and be available to the connection. request id 7 is chosen for the example; the result contains ToolListItem records with inputSchema, optional outputSchema, name, description, parameter names, and permission.</p>
+<pre><code>{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 7,
+  &quot;method&quot;: &quot;_goose/unstable/tools/list&quot;,
+  &quot;params&quot;: {
+    &quot;sessionId&quot;: &quot;YOUR_SESSION_ID&quot;,
+    &quot;extensionName&quot;: &quot;developer&quot;
+  }
+}</code></pre>
+<p>The direct custom tools/call request takes sessionId, extensionName, name, and arguments. Its response exposes content, optional structuredContent, isError, and optional _meta. Do not confuse this direct-call envelope with the model’s internal ToolRequest, which has different correlation and approval machinery.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L102">crates/goose-sdk-types/src/custom_requests.rs:102</a> · lines 102–108</figcaption>
+<pre><code data-source="crates/goose-sdk-types/src/custom_requests.rs" data-start="102" data-end="108">pub struct GooseToolCallRequest {
+    pub session_id: String,
+    pub extension_name: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+}</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/tools.rs#L1">crates/goose/src/acp/server/tools.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="server-to-client-extensions-and-notifications">
+<h2 id="server-to-client-extensions-and-notifications">Server-to-client extensions and notifications</h2>
+<p>The server can request recipe values through _goose/unstable/session/recipe/request-params, with RequestRecipeParams and RecipeParamsResponse. Its declaration is a method constant collected by agent_request_schemas, so it belongs to the reverse direction rather than the client-to-agent table below.</p>
+<p>The _goose/unstable/session/update notification contains sessionId and update. Its discriminant is sessionUpdate with snake_case values usage_update, status_message, message_usage, and live_voice_interaction_ended, even though surrounding fields are camelCase. Device-code authentication uses _goose/unstable/providers/authentication/device-code with providerId, userCode, verificationUri, and expiresIn. Capability support controls delivery of Goose custom notifications.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_notifications.rs#L1">crates/goose-sdk-types/src/custom_notifications.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L1">crates/goose-sdk-types/src/custom_requests/recipe.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/agent_requests.rs#L1">crates/goose/src/acp/server/agent_requests.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="rust-operation-and-runtime-contracts">
+<h2 id="rust-operation-and-runtime-contracts">Rust operation and runtime contracts</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Contract</th>
+<th scope="col">Implementer responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Operation&lt;S,E&gt;</td>
+<td>name; optional run/cancel/commands; optional tools, prompt_parts, moim_parts contributions.</td>
+</tr>
+<tr>
+<td>Inference&lt;S,E&gt;</td>
+<td>applies predicate and infer using collected input.</td>
+</tr>
+<tr>
+<td>MachineSession</td>
+<td>id and conversation access.</td>
+</tr>
+<tr>
+<td>SessionLoader&lt;S&gt;</td>
+<td>Load fresh session state by ID.</td>
+</tr>
+<tr>
+<td>EffectHandler&lt;S,E&gt;</td>
+<td>Persist effects with host semantics.</td>
+</tr>
+<tr>
+<td>MachineEffect</td>
+<td>Assign stable IDs where applicable.</td>
+</tr>
+<tr>
+<td>ToolProvider / SyncTool / AsyncTool</td>
+<td>Supply stable names/schemas and current-session handlers; dynamic tools are queried before inference and execution.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>OperationResult is NotApplicable or Applied(StepResult). StepResult contains effects, selected-step name, and yield_to_client. The machine reloads between passes. The provider stream contract and its error categories are described on the <a href="providers.html">providers page</a>.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/operation.rs#L1">crates/goose-agent/src/operation.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/tool.rs#L1">crates/goose-agent/src/tool.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="uniffi-binding-contract">
+<h2 id="uniffi-binding-contract">UniFFI binding contract</h2>
+<p>The bindings feature exports provider constructors and typed message/tool/model structures. Provider exposes name, supported_features, context_limit, list_models, stream, complete, and compact. ProviderStream::next_chunk returns an optional StreamChunk or a typed error. A None terminates consumption. The SDK exposes typed lifecycle observability events with one end event per request and no delivery after a hook is cleared; streamed response capture is not buffered into responseJson.</p>
+<p>Python package name is goose-sdk and import namespace is goose. Kotlin uses io.github.aaif_goose; the Maven artifact is io.github.aaif-goose:gdk. These names are checked-in packaging contracts, not verification of the latest registry publication. The source snapshot controls this wiki’s examples.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/src/bindings.rs#L1">crates/goose-sdk/src/bindings.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/src/observability.rs#L1">crates/goose-sdk/src/observability.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/README.md#L1">crates/goose-sdk/README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="complete-declared-client-to-agent-custom-request-inventory">
+<h2 id="complete-declared-client-to-agent-custom-request-inventory">Complete declared client-to-agent custom request inventory</h2>
+<p>The 111 entries below are extracted from JsonRpcRequest method attributes in goose-sdk-types at this revision. This inventory records declarations and their typed response names; it is not live runtime validation or proof that every method is enabled on every backend. Follow the source for exact fields, defaults, enums, and handler capability requirements.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Method</th>
+<th scope="col">Request type</th>
+<th scope="col">Response type</th>
+<th scope="col">Declaration</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>_goose/unstable/agent-mentions/list</td>
+<td>ListAgentMentionsRequest</td>
+<td>ListAgentMentionsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1540">crates/goose-sdk-types/src/custom_requests.rs:1540</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/apps/delete</td>
+<td>AppsDeleteRequest</td>
+<td>AppsDeleteResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L168">crates/goose-sdk-types/src/custom_requests.rs:168</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/apps/export</td>
+<td>AppsExportRequest</td>
+<td>AppsExportResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L141">crates/goose-sdk-types/src/custom_requests.rs:141</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/apps/import</td>
+<td>AppsImportRequest</td>
+<td>AppsImportResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L154">crates/goose-sdk-types/src/custom_requests.rs:154</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/apps/list</td>
+<td>AppsListRequest</td>
+<td>AppsListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L126">crates/goose-sdk-types/src/custom_requests.rs:126</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/extensions/add</td>
+<td>AddConfigExtensionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L502">crates/goose-sdk-types/src/custom_requests.rs:502</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/extensions/list</td>
+<td>GetConfigExtensionsRequest</td>
+<td>GetConfigExtensionsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L484">crates/goose-sdk-types/src/custom_requests.rs:484</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/extensions/remove</td>
+<td>RemoveConfigExtensionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L512">crates/goose-sdk-types/src/custom_requests.rs:512</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/extensions/set-enabled</td>
+<td>SetConfigExtensionEnabledRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L521">crates/goose-sdk-types/src/custom_requests.rs:521</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/prompts/get</td>
+<td>GetPromptRequest</td>
+<td>GetPromptResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L354">crates/goose-sdk-types/src/custom_requests.rs:354</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/prompts/list</td>
+<td>ListPromptsRequest</td>
+<td>ListPromptsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L342">crates/goose-sdk-types/src/custom_requests.rs:342</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/prompts/reset</td>
+<td>ResetPromptRequest</td>
+<td>PromptOperationResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L380">crates/goose-sdk-types/src/custom_requests.rs:380</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/prompts/save</td>
+<td>SavePromptRequest</td>
+<td>PromptOperationResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L371">crates/goose-sdk-types/src/custom_requests.rs:371</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/read</td>
+<td>ConfigReadRequest</td>
+<td>ConfigReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L563">crates/goose-sdk-types/src/custom_requests.rs:563</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/read-all</td>
+<td>ConfigReadAllRequest</td>
+<td>ConfigReadAllResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L601">crates/goose-sdk-types/src/custom_requests.rs:601</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/remove</td>
+<td>ConfigRemoveRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L591">crates/goose-sdk-types/src/custom_requests.rs:591</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/config/upsert</td>
+<td>ConfigUpsertRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L580">crates/goose-sdk-types/src/custom_requests.rs:580</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/defaults/clear</td>
+<td>DefaultsClearRequest</td>
+<td>DefaultsReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L661">crates/goose-sdk-types/src/custom_requests.rs:661</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/defaults/read</td>
+<td>DefaultsReadRequest</td>
+<td>DefaultsReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L638">crates/goose-sdk-types/src/custom_requests.rs:638</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/defaults/save</td>
+<td>DefaultsSaveRequest</td>
+<td>DefaultsReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L651">crates/goose-sdk-types/src/custom_requests.rs:651</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/diagnostics/get</td>
+<td>DiagnosticsGetRequest</td>
+<td>DiagnosticsGetResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L305">crates/goose-sdk-types/src/custom_requests.rs:305</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/config</td>
+<td>DictationConfigRequest</td>
+<td>DictationConfigResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1668">crates/goose-sdk-types/src/custom_requests.rs:1668</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/models/cancel</td>
+<td>DictationModelCancelRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2313">crates/goose-sdk-types/src/custom_requests.rs:2313</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/models/delete</td>
+<td>DictationModelDeleteRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2321">crates/goose-sdk-types/src/custom_requests.rs:2321</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/models/download</td>
+<td>DictationModelDownloadRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2276">crates/goose-sdk-types/src/custom_requests.rs:2276</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/models/download/progress</td>
+<td>DictationModelDownloadProgressRequest</td>
+<td>DictationModelDownloadProgressResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2285">crates/goose-sdk-types/src/custom_requests.rs:2285</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/models/list</td>
+<td>DictationModelsListRequest</td>
+<td>DictationModelsListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2250">crates/goose-sdk-types/src/custom_requests.rs:2250</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/dictation/transcribe</td>
+<td>DictationTranscribeRequest</td>
+<td>DictationTranscribeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1649">crates/goose-sdk-types/src/custom_requests.rs:1649</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/chat-templates/builtin/list</td>
+<td>LocalInferenceBuiltinChatTemplatesListRequest</td>
+<td>LocalInferenceBuiltinChatTemplatesListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2231">crates/goose-sdk-types/src/custom_requests.rs:2231</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/huggingface/repo/variants</td>
+<td>LocalInferenceHuggingFaceRepoVariantsRequest</td>
+<td>LocalInferenceHuggingFaceRepoVariantsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2209">crates/goose-sdk-types/src/custom_requests.rs:2209</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/huggingface/search</td>
+<td>LocalInferenceHuggingFaceSearchRequest</td>
+<td>LocalInferenceHuggingFaceSearchResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2190">crates/goose-sdk-types/src/custom_requests.rs:2190</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/delete</td>
+<td>LocalInferenceModelDeleteRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2133">crates/goose-sdk-types/src/custom_requests.rs:2133</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/download</td>
+<td>LocalInferenceModelDownloadRequest</td>
+<td>LocalInferenceModelDownloadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2083">crates/goose-sdk-types/src/custom_requests.rs:2083</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/download/cancel</td>
+<td>LocalInferenceModelDownloadCancelRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2122">crates/goose-sdk-types/src/custom_requests.rs:2122</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/download/progress</td>
+<td>LocalInferenceModelDownloadProgressRequest</td>
+<td>LocalInferenceModelDownloadProgressResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2104">crates/goose-sdk-types/src/custom_requests.rs:2104</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/evict</td>
+<td>LocalInferenceModelEvictRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2144">crates/goose-sdk-types/src/custom_requests.rs:2144</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/list</td>
+<td>LocalInferenceModelsListRequest</td>
+<td>LocalInferenceModelsListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2068">crates/goose-sdk-types/src/custom_requests.rs:2068</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/settings/read</td>
+<td>LocalInferenceModelSettingsReadRequest</td>
+<td>LocalInferenceModelSettingsReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2155">crates/goose-sdk-types/src/custom_requests.rs:2155</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/local-inference/models/settings/update</td>
+<td>LocalInferenceModelSettingsUpdateRequest</td>
+<td>LocalInferenceModelSettingsUpdateResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2172">crates/goose-sdk-types/src/custom_requests.rs:2172</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/onboarding/import/apply</td>
+<td>OnboardingImportApplyRequest</td>
+<td>OnboardingImportApplyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L719">crates/goose-sdk-types/src/custom_requests.rs:719</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/onboarding/import/scan</td>
+<td>OnboardingImportScanRequest</td>
+<td>OnboardingImportScanResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L700">crates/goose-sdk-types/src/custom_requests.rs:700</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/preferences/read</td>
+<td>PreferencesReadRequest</td>
+<td>PreferencesReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L545">crates/goose-sdk-types/src/custom_requests.rs:545</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/preferences/save</td>
+<td>PreferencesSaveRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L554">crates/goose-sdk-types/src/custom_requests.rs:554</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/canonical-model-info</td>
+<td>CanonicalModelInfoRequest</td>
+<td>CanonicalModelInfoResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1080">crates/goose-sdk-types/src/custom_requests.rs:1080</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/catalog/list</td>
+<td>ProviderCatalogListRequest</td>
+<td>ProviderCatalogListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1213">crates/goose-sdk-types/src/custom_requests.rs:1213</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/catalog/template</td>
+<td>ProviderCatalogTemplateRequest</td>
+<td>ProviderCatalogTemplateResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1246">crates/goose-sdk-types/src/custom_requests.rs:1246</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/config/authenticate</td>
+<td>ProviderConfigAuthenticateRequest</td>
+<td>ProviderConfigChangeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L980">crates/goose-sdk-types/src/custom_requests.rs:980</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/config/delete</td>
+<td>ProviderConfigDeleteRequest</td>
+<td>ProviderConfigChangeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L969">crates/goose-sdk-types/src/custom_requests.rs:969</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/config/read</td>
+<td>ProviderConfigReadRequest</td>
+<td>ProviderConfigReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L922">crates/goose-sdk-types/src/custom_requests.rs:922</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/config/save</td>
+<td>ProviderConfigSaveRequest</td>
+<td>ProviderConfigChangeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L957">crates/goose-sdk-types/src/custom_requests.rs:957</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/config/status</td>
+<td>ProviderConfigStatusRequest</td>
+<td>ProviderConfigStatusResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L939">crates/goose-sdk-types/src/custom_requests.rs:939</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/custom/create</td>
+<td>CustomProviderCreateRequest</td>
+<td>CustomProviderCreateResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1311">crates/goose-sdk-types/src/custom_requests.rs:1311</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/custom/delete</td>
+<td>CustomProviderDeleteRequest</td>
+<td>CustomProviderDeleteResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1373">crates/goose-sdk-types/src/custom_requests.rs:1373</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/custom/read</td>
+<td>CustomProviderReadRequest</td>
+<td>CustomProviderReadResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1332">crates/goose-sdk-types/src/custom_requests.rs:1332</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/custom/update</td>
+<td>CustomProviderUpdateRequest</td>
+<td>CustomProviderUpdateResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1351">crates/goose-sdk-types/src/custom_requests.rs:1351</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/inventory/refresh</td>
+<td>RefreshProviderInventoryRequest</td>
+<td>RefreshProviderInventoryResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1764">crates/goose-sdk-types/src/custom_requests.rs:1764</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/list</td>
+<td>ListProvidersRequest</td>
+<td>ListProvidersResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1709">crates/goose-sdk-types/src/custom_requests.rs:1709</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/readiness/check</td>
+<td>ProviderReadinessCheckRequest</td>
+<td>ProviderReadinessCheckResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1726">crates/goose-sdk-types/src/custom_requests.rs:1726</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/secrets/delete</td>
+<td>ProviderSecretDeleteRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1049">crates/goose-sdk-types/src/custom_requests.rs:1049</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/secrets/list</td>
+<td>ProviderSecretsListRequest</td>
+<td>ProviderSecretsListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1034">crates/goose-sdk-types/src/custom_requests.rs:1034</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/setup/catalog/list</td>
+<td>ProviderSetupCatalogListRequest</td>
+<td>ProviderSetupCatalogListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1231">crates/goose-sdk-types/src/custom_requests.rs:1231</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/providers/supported-models/list</td>
+<td>ProviderSupportedModelsListRequest</td>
+<td>ProviderSupportedModelsListResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1746">crates/goose-sdk-types/src/custom_requests.rs:1746</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/decode</td>
+<td>DecodeRecipeRequest</td>
+<td>DecodeRecipeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L313">crates/goose-sdk-types/src/custom_requests/recipe.rs:313</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/delete</td>
+<td>DeleteRecipeRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L367">crates/goose-sdk-types/src/custom_requests/recipe.rs:367</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/encode</td>
+<td>EncodeRecipeRequest</td>
+<td>EncodeRecipeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L298">crates/goose-sdk-types/src/custom_requests/recipe.rs:298</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/list</td>
+<td>ListRecipesRequest</td>
+<td>ListRecipesResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L374">crates/goose-sdk-types/src/custom_requests/recipe.rs:374</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/parse</td>
+<td>ParseRecipeRequest</td>
+<td>ParseRecipeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L355">crates/goose-sdk-types/src/custom_requests/recipe.rs:355</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/save</td>
+<td>SaveRecipeRequest</td>
+<td>SaveRecipeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L339">crates/goose-sdk-types/src/custom_requests/recipe.rs:339</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/scan</td>
+<td>ScanRecipeRequest</td>
+<td>ScanRecipeResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L327">crates/goose-sdk-types/src/custom_requests/recipe.rs:327</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/schedule</td>
+<td>ScheduleRecipeRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L384">crates/goose-sdk-types/src/custom_requests/recipe.rs:384</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/slash-command</td>
+<td>SetRecipeSlashCommandRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L394">crates/goose-sdk-types/src/custom_requests/recipe.rs:394</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/recipes/to-yaml</td>
+<td>RecipeToYamlRequest</td>
+<td>RecipeToYamlResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/recipe.rs#L406">crates/goose-sdk-types/src/custom_requests/recipe.rs:406</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/resources/read</td>
+<td>ReadResourceRequest</td>
+<td>ReadResourceResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L82">crates/goose-sdk-types/src/custom_requests.rs:82</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/create</td>
+<td>CreateScheduleRequest</td>
+<td>CreateScheduleResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L40">crates/goose-sdk-types/src/custom_requests/schedule.rs:40</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/delete</td>
+<td>DeleteScheduleRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L56">crates/goose-sdk-types/src/custom_requests/schedule.rs:56</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/list</td>
+<td>ListSchedulesRequest</td>
+<td>ListSchedulesResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L27">crates/goose-sdk-types/src/custom_requests/schedule.rs:27</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/pause</td>
+<td>PauseScheduleRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L125">crates/goose-sdk-types/src/custom_requests/schedule.rs:125</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/run-now</td>
+<td>RunScheduleNowRequest</td>
+<td>RunScheduleNowResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L82">crates/goose-sdk-types/src/custom_requests/schedule.rs:82</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/running-job/inspect</td>
+<td>InspectRunningJobRequest</td>
+<td>InspectRunningJobResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L161">crates/goose-sdk-types/src/custom_requests/schedule.rs:161</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/running-job/kill</td>
+<td>KillRunningJobRequest</td>
+<td>KillRunningJobResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L145">crates/goose-sdk-types/src/custom_requests/schedule.rs:145</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/sessions/list</td>
+<td>ListScheduleSessionsRequest</td>
+<td>ListScheduleSessionsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L109">crates/goose-sdk-types/src/custom_requests/schedule.rs:109</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/unpause</td>
+<td>UnpauseScheduleRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L134">crates/goose-sdk-types/src/custom_requests/schedule.rs:134</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/schedules/update</td>
+<td>UpdateScheduleRequest</td>
+<td>UpdateScheduleResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests/schedule.rs#L65">crates/goose-sdk-types/src/custom_requests/schedule.rs:65</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/archive</td>
+<td>ArchiveSessionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L790">crates/goose-sdk-types/src/custom_requests.rs:790</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/conversation/truncate</td>
+<td>TruncateSessionConversationRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L761">crates/goose-sdk-types/src/custom_requests.rs:761</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/export</td>
+<td>ExportSessionRequest</td>
+<td>ExportSessionResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L806">crates/goose-sdk-types/src/custom_requests.rs:806</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/extensions/add</td>
+<td>AddSessionExtensionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L34">crates/goose-sdk-types/src/custom_requests.rs:34</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/extensions/list</td>
+<td>GetSessionExtensionsRequest</td>
+<td>GetSessionExtensionsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L532">crates/goose-sdk-types/src/custom_requests.rs:532</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/extensions/remove</td>
+<td>RemoveSessionExtensionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L43">crates/goose-sdk-types/src/custom_requests.rs:43</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/import</td>
+<td>ImportSessionRequest</td>
+<td>ImportSessionResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L831">crates/goose-sdk-types/src/custom_requests.rs:831</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/info</td>
+<td>GetSessionInfoRequest</td>
+<td>GetSessionInfoResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L744">crates/goose-sdk-types/src/custom_requests.rs:744</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/live-voice/availability</td>
+<td>LiveVoiceAvailabilityRequest</td>
+<td>LiveVoiceAvailabilityResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L247">crates/goose-sdk-types/src/custom_requests.rs:247</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/live-voice/start</td>
+<td>LiveVoiceStartRequest</td>
+<td>LiveVoiceStartResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L274">crates/goose-sdk-types/src/custom_requests.rs:274</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/live-voice/stop</td>
+<td>LiveVoiceStopRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L294">crates/goose-sdk-types/src/custom_requests.rs:294</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/project/update</td>
+<td>UpdateSessionProjectRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L772">crates/goose-sdk-types/src/custom_requests.rs:772</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/rename</td>
+<td>RenameSessionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L781">crates/goose-sdk-types/src/custom_requests.rs:781</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/share/nostr</td>
+<td>ShareSessionNostrRequest</td>
+<td>ShareSessionNostrResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L850">crates/goose-sdk-types/src/custom_requests.rs:850</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/steer</td>
+<td>SteerSessionRequest</td>
+<td>SteerSessionResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L223">crates/goose-sdk-types/src/custom_requests.rs:223</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/system-prompt/set</td>
+<td>SetSessionSystemPromptRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L207">crates/goose-sdk-types/src/custom_requests.rs:207</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/unarchive</td>
+<td>UnarchiveSessionRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L798">crates/goose-sdk-types/src/custom_requests.rs:798</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/session/working-dir/update</td>
+<td>UpdateWorkingDirRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L182">crates/goose-sdk-types/src/custom_requests.rs:182</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/slash-commands/list</td>
+<td>ListSlashCommandsRequest</td>
+<td>ListSlashCommandsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1560">crates/goose-sdk-types/src/custom_requests.rs:1560</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/sources/create</td>
+<td>CreateSourceRequest</td>
+<td>CreateSourceResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1479">crates/goose-sdk-types/src/custom_requests.rs:1479</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/sources/delete</td>
+<td>DeleteSourceRequest</td>
+<td>EmptyResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1605">crates/goose-sdk-types/src/custom_requests.rs:1605</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/sources/export</td>
+<td>ExportSourceRequest</td>
+<td>ExportSourceResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1615">crates/goose-sdk-types/src/custom_requests.rs:1615</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/sources/import</td>
+<td>ImportSourcesRequest</td>
+<td>ImportSourcesResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1634">crates/goose-sdk-types/src/custom_requests.rs:1634</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/sources/list</td>
+<td>ListSourcesRequest</td>
+<td>ListSourcesResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1506">crates/goose-sdk-types/src/custom_requests.rs:1506</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/sources/update</td>
+<td>UpdateSourceRequest</td>
+<td>UpdateSourceResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L1579">crates/goose-sdk-types/src/custom_requests.rs:1579</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/tools/call</td>
+<td>GooseToolCallRequest</td>
+<td>GooseToolCallResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L100">crates/goose-sdk-types/src/custom_requests.rs:100</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/tools/list</td>
+<td>GetToolsRequest</td>
+<td>GetToolsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L52">crates/goose-sdk-types/src/custom_requests.rs:52</a>
+</td>
+</tr>
+<tr>
+<td>_goose/unstable/tools/permissions/set</td>
+<td>SetToolPermissionsRequest</td>
+<td>SetToolPermissionsResponse</td>
+<td>
+<a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk-types/src/custom_requests.rs#L2347">crates/goose-sdk-types/src/custom_requests.rs:2347</a>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="patterns.html">← Brilliant code & design patterns</a>
+<a href="engineering.html">Specifications, verification & reading guide →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

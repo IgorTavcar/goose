@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Trait contracts, adapters, metadata, retries, and local or delegated inference.">
+<meta name="color-scheme" content="light dark">
+<title>Providers &amp; inference APIs · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html" aria-current="page">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Providers & inference APIs</h1>
+<p class="deck">Trait contracts, adapters, metadata, retries, and local or delegated inference.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#the-required-provider-interface">The required provider interface</a>
+<a href="#native-and-declarative-adapters">Native and declarative adapters</a>
+<a href="#canonical-metadata-is-a-snapshot-plus-live-discovery">Canonical metadata is a snapshot plus live discovery</a>
+<a href="#retry-policy-in-detail">Retry policy in detail</a>
+<a href="#provider-managed-state-and-context">Provider-managed state and context</a>
+<a href="#local-inference-and-cross-language-use">Local inference and cross-language use</a>
+</nav>
+<section aria-labelledby="the-required-provider-interface">
+<h2 id="the-required-provider-interface">The required provider interface</h2>
+<p>A provider supplies its name and streaming implementation. Native traits use Send/Sync through MaybeSend/MaybeSync; WASM traits relax those bounds. Model configuration, system prompt, messages, and MCP tools are distinct inputs. The stream yields Result tuples containing optional message and optional usage; either may arrive without the other. Text can be incremental, while tool calls must be assembled before emission.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/base.rs#L504">crates/goose-provider-types/src/base.rs:504</a> · lines 504–538</figcaption>
+<pre><code data-source="crates/goose-provider-types/src/base.rs" data-start="504" data-end="538">pub trait Provider: MaybeSend + MaybeSync {
+    /// Get the name of this provider instance
+    fn get_name(&amp;self) -&gt; &amp;str;
+
+    fn provider_session_id(&amp;self) -&gt; Option&lt;String&gt; {
+        None
+    }
+
+    async fn resume(&amp;self, _session_id: &amp;str) -&gt; Result&lt;(), ProviderError&gt; {
+        Ok(())
+    }
+
+    /// Primary streaming method that all providers must implement.
+    async fn stream(
+        &amp;self,
+        model_config: &amp;ModelConfig,
+        system: &amp;str,
+        messages: &amp;[Message],
+        tools: &amp;[Tool],
+    ) -&gt; Result&lt;MessageStream, ProviderError&gt;;
+
+    async fn complete(
+        &amp;self,
+        model_config: &amp;ModelConfig,
+        system: &amp;str,
+        messages: &amp;[Message],
+        tools: &amp;[Tool],
+    ) -&gt; Result&lt;(Message, ProviderUsage), ProviderError&gt; {
+        let stream = self.stream(model_config, system, messages, tools).await?;
+        collect_stream(stream).await
+    }
+
+    /// Resolve the effective context limit for a model.
+    ///
+    /// `override_limit` is consumer policy and takes precedence over provider</code></pre>
+</figure>
+<p>The default complete method collects the stream. Other defaults cover model inventory, context limits, retry policy, resume, provider session identity, and permission routing. The small contract crate supports implementing a provider without depending on Goose’s CLI or desktop.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/README.md#L1">crates/goose-provider-types/README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="native-and-declarative-adapters">
+<h2 id="native-and-declarative-adapters">Native and declarative adapters</h2>
+<p>Native modules implement vendor-specific protocols: Anthropic, OpenAI, Google, Databricks, Azure Foundry, Snowflake, Ollama, and others in the checked-in provider tree. Declarative definitions package configuration into JSON and select an OpenAI, Ollama, or Anthropic engine. A compatible service can therefore reuse conversion, auth, retry, and streaming logic instead of growing a duplicate adapter.</p>
+<p>Definitions include model metadata and environment configuration. The configuration’s brand is not a new transport protocol. When diagnosing failures, inspect the selected engine, base URL, request parameters, and HTTP response mapping. Provider wrappers in the Goose application add application-specific registry and ACP behavior on top of the released provider crate.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-providers/README.md#L1">crates/goose-providers/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-providers/src/declarative.rs#L1">crates/goose-providers/src/declarative.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/providers/mod.rs#L1">crates/goose/src/providers/mod.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="canonical-metadata-is-a-snapshot-plus-live-discovery">
+<h2 id="canonical-metadata-is-a-snapshot-plus-live-discovery">Canonical metadata is a snapshot plus live discovery</h2>
+<p>The canonical registry maps provider-specific names to canonical provider/model IDs and supplies context limits, capabilities, and per-token costs. ModelInfo also carries optional resolved model, cache control support, reasoning preservation format, and request parameters. Metadata is not a guarantee that a remote service still exposes an ID. The repository has a builder that fetches metadata and checks mapping changes, but this wiki records the checked-in state only.</p>
+<p>The recommendation logic retains unknown future models rather than assuming absence from the bundled registry means unusable. Separately, toolshim settings affect whether tool-less models are kept. Treat inventory, recommendation, and canonical mapping as distinct operations when integrating a settings UI.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/canonical/README.md#L1">crates/goose-provider-types/src/canonical/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/base.rs#L1">crates/goose-provider-types/src/base.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="retry-policy-in-detail">
+<h2 id="retry-policy-in-detail">Retry policy in detail</h2>
+<p>Transient categories include rate limiting, server errors, and network errors. RequestFailed is also retried by default, unless transient_only is enabled or the failure matches a known permanent reasoning/signature constraint. The default policy allows three retries after the original request. Authentication refresh in ProviderRetry is a separate one-time attempt and does not consume the transient retry counter.</p>
+<p>For retry number a≥1, the base delay is initial_ms × multiplier^(a−1), capped at max_interval_ms, then multiplied by uniform jitter in [0.8,1.2). Consequently the final delay can exceed the nominal cap by almost 20%. A provider-supplied rate-limit retry_delay takes precedence. Default values are 1000 ms, multiplier 2, and cap 30000 ms. WASM waits use the host timer.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/retry.rs#L71">crates/goose-provider-types/src/retry.rs:71</a> · lines 71–88</figcaption>
+<pre><code data-source="crates/goose-provider-types/src/retry.rs" data-start="71" data-end="88">    pub fn delay_for_attempt(&amp;self, attempt: usize) -&gt; Duration {
+        if attempt == 0 {
+            return Duration::from_millis(0);
+        }
+
+        let exponent = (attempt - 1) as u32;
+        let base_delay_ms = (self.initial_interval_ms as f64
+            * self.backoff_multiplier.powi(exponent as i32)) as u64;
+
+        let capped_delay_ms = std::cmp::min(base_delay_ms, self.max_interval_ms);
+
+        let jitter_factor_to_avoid_thundering_herd = 0.8 + (rand::random::&lt;f64&gt;() * 0.4);
+        let jitter_delay_ms =
+            (capped_delay_ms as f64 * jitter_factor_to_avoid_thundering_herd) as u64;
+
+        Duration::from_millis(jitter_delay_ms)
+    }
+}</code></pre>
+</figure>
+<p>This retry surrounds operations that establish or perform a request. It does not prove safe replay after arbitrary partial streamed output or tool side effects. Recipe retries use separate settings and success checks, covered on the recipes page.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/retry.rs#L1">crates/goose-provider-types/src/retry.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="provider-managed-state-and-context">
+<h2 id="provider-managed-state-and-context">Provider-managed state and context</h2>
+<p>
+<code>manages_own_context()</code> tells Goose to avoid duplicating context management performed by a separate harness. ACP providers can expose provider session identity, resume behavior, model/mode changes, and permission routing. The application must keep a session’s model selection scoped to that provider context rather than leaking it into another conversation.</p>
+<p>CompactingProvider also reports self-managed context. It catches ContextLengthExceeded returned when creating a stream or running complete, summarizes history, and retries once. It does not intercept every error emitted later while consuming an already-open stream. This narrower boundary is easy to miss when wrapping a streaming API.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/provider.rs#L1">crates/goose/src/acp/provider.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/provider.rs#L1">crates/goose-context-management/src/provider.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="local-inference-and-cross-language-use">
+<h2 id="local-inference-and-cross-language-use">Local inference and cross-language use</h2>
+<p>On-device inference is optional and has accelerator feature gates. The model runtime and download manager are separate crates so model lifecycle and transfer progress need not be tied to the application. goose-sdk adds UniFFI constructors, streaming reads, completions, and compaction for Python and Kotlin. Its ProviderModelConfig and ProviderMessage are binding types with explicit conversions; they are not automatically identical to the Rust internal structs.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-local-inference/README.md#L1">crates/goose-local-inference/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-providers/Cargo.toml#L1">crates/goose-providers/Cargo.toml:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/src/bindings.rs#L1">crates/goose-sdk/src/bindings.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/README.md#L1">crates/goose-sdk/README.md:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="messages.html">← Conversation & event contracts</a>
+<a href="extensions.html">MCP extensions & tool execution →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Trigger arithmetic, protected turns, summaries, and preserved transcripts.">
+<meta name="color-scheme" content="light dark">
+<title>Context management &amp; compaction algorithms · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html" aria-current="page">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Context management & compaction algorithms</h1>
+<p class="deck">Trigger arithmetic, protected turns, summaries, and preserved transcripts.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#three-distinct-mechanisms">Three distinct mechanisms</a>
+<a href="#threshold-specification">Threshold specification</a>
+<a href="#full-history-compaction-step-by-step">Full-history compaction step by step</a>
+<a href="#summarizer-overflow-recovery">Summarizer overflow recovery</a>
+<a href="#tool-pair-cutoff-and-batching">Tool-pair cutoff and batching</a>
+<a href="#structured-summaries-and-practical-limits">Structured summaries and practical limits</a>
+</nav>
+<section aria-labelledby="three-distinct-mechanisms">
+<h2 id="three-distinct-mechanisms">Three distinct mechanisms</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Mechanism</th>
+<th scope="col">Trigger</th>
+<th scope="col">Transformation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full conversation compaction</td>
+<td>Automatic threshold, manual request, or overflow recovery</td>
+<td>Summarize history; retain originals as agent-invisible; add summary/continuation.</td>
+</tr>
+<tr>
+<td>Tool-pair summarization</td>
+<td>Eligible old tool calls exceed cutoff plus batch</td>
+<td>Replace selected model-visible pairs with smaller summaries, preserving recent work.</td>
+</tr>
+<tr>
+<td>CompactingProvider wrapper</td>
+<td>ContextLengthExceeded at the provider call boundary</td>
+<td>Retry once with a summary standing in for messages.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>These mechanisms share summarization primitives but are not equivalent. Full application compaction handles visibility and session usage; the standalone provider wrapper has no access to Goose’s transcript database. Self-managed providers bypass Goose-side automatic compaction and tool-pair summarization.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L1">crates/goose/src/context_mgmt/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/provider.rs#L1">crates/goose-context-management/src/provider.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L1682">crates/goose/src/agents/agent.rs:1682</a>
+</p>
+</section>
+<section aria-labelledby="threshold-specification">
+<h2 id="threshold-specification">Threshold specification</h2>
+<p>Automatic compaction uses current tokens divided by the provider-derived context limit. It prefers session usage.total_tokens when available; otherwise it estimates agent-visible messages. A valid automatic threshold is strictly between 0 and 1, and compaction triggers on a strict greater-than comparison. The default is 0.8. Values ≤0 or ≥1 disable that automatic trigger; this does not prove every overflow-recovery path is disabled.</p>
+<p>At a 128000-token context limit, 102400 tokens equals 0.8 and does not satisfy the strict trigger; 102401 does. Token estimation for this path is not an exact accounting of every provider wire overhead or tool-schema expansion. An oversized system prompt can still fail when message history is short.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L224">crates/goose/src/context_mgmt/mod.rs:224</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/lib.rs#L1">crates/goose-context-management/src/lib.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="full-history-compaction-step-by-step">
+<h2 id="full-history-compaction-step-by-step">Full-history compaction step by step</h2>
+<ol>
+<li>For automatic compaction, locate the latest eligible agent-visible user text message, excluding turn-context events and tool-bearing messages.</li>
+<li>Summarize the conversation through the provider abstraction.</li>
+<li>Copy originals with agent visibility turned off, retaining their user visibility metadata.</li>
+<li>Append an agent-only summary and an assistant continuation, choosing continuation text for manual compaction, recent user kickoff, or mid-tool-loop recovery.</li>
+<li>Append the preserved user text when present. Carry the current turn-context event with a fresh identity and a timestamp that preserves appended order.</li>
+<li>Estimate retained context tokens separately from the summarizer’s billable usage and return both.</li>
+</ol>
+<p>The preserved message is a text-only projection; images are not blindly copied by that branch. Timestamps matter because storage reload orders messages by creation time. Copying a context event with its old timestamp would put the newly appended event back into the wrong part of history.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L70">crates/goose/src/context_mgmt/mod.rs:70</a>
+</p>
+</section>
+<section aria-labelledby="summarizer-overflow-recovery">
+<h2 id="summarizer-overflow-recovery">Summarizer overflow recovery</h2>
+<p>The standalone summarizer tries removal percentages [0,10,20,50,100]. It formats selected history into a system prompt and submits a short user request. Only ContextLengthExceeded advances to another removal attempt. Other provider errors return immediately. A history with no tool-response messages fails after its first overflow because there is nothing the algorithm can remove.</p>
+<p>Removal works over message indices containing tool responses and expands from the middle. This is a positional heuristic intended to retain beginnings and recent context. It drops entire response-bearing messages, which can also contain other blocks; it is not a token-level truncator or a semantic relevance ranking. For even counts the center alternation is straightforward. The implementation’s boundary checks can under-remove for odd counts: five response messages at the 100% attempt omit four, leaving the far-right one. The final error text says “all tool responses,” but readers should distinguish that label from the exact index-selection behavior.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/summarize.rs#L54">crates/goose-context-management/src/summarize.rs:54</a> · lines 54–71</figcaption>
+<pre><code data-source="crates/goose-context-management/src/summarize.rs" data-start="54" data-end="71">    let num_to_remove = ((tool_indices.len() * remove_percent as usize) / 100).max(1);
+    let middle = tool_indices.len() / 2;
+    let mut indices_to_remove = Vec::new();
+
+    for i in 0..num_to_remove {
+        let offset = i / 2;
+        if i % 2 == 0 {
+            if middle &gt; offset {
+                indices_to_remove.push(tool_indices[middle - offset - 1]);
+            }
+        } else if middle + offset &lt; tool_indices.len() {
+            indices_to_remove.push(tool_indices[middle + offset]);
+        }
+    }
+
+    messages
+        .iter()
+        .enumerate()</code></pre>
+</figure>
+<p>On success, the summary takes User role. Token estimates are filled from the raw model output before a structured summary is rendered, preserving billable output accounting. A schema-ignoring model or invalid custom rendering keeps the raw text rather than discarding the whole summary.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/summarize.rs#L1">crates/goose-context-management/src/summarize.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/structured.rs#L1">crates/goose-context-management/src/structured.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="tool-pair-cutoff-and-batching">
+<h2 id="tool-pair-cutoff-and-batching">Tool-pair cutoff and batching</h2>
+<p>The cutoff is <code>clamp(floor(3 × floor(context_limit × threshold) / 20000), 10, 500)</code>. Here threshold values in (0,1] are accepted; invalid values fall back to 0.8. This differs from the full automatic trigger, where threshold=1 disables compaction. For context=128000 and threshold=0.8, the cutoff is 15.</p>
+<p>The algorithm gathers agent-visible tool-request IDs in order, subtracts protect_last_n using saturating arithmetic, and triggers only when eligible calls exceed cutoff+10. It selects the oldest ten IDs. With cutoff=15 and no protected calls, 25 calls do not trigger but 26 do. With five protected calls, the same trigger requires at least 31. A pair summarization requires both an agent-visible request and response.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L366">crates/goose/src/context_mgmt/mod.rs:366</a> · lines 366–375</figcaption>
+<pre><code data-source="crates/goose/src/context_mgmt/mod.rs" data-start="366" data-end="375">pub fn compute_tool_call_cutoff(context_limit: usize, compaction_threshold: f64) -&gt; usize {
+    let threshold = if compaction_threshold &gt; 0.0 &amp;&amp; compaction_threshold &lt;= 1.0 {
+        compaction_threshold
+    } else {
+        DEFAULT_COMPACTION_THRESHOLD
+    };
+    let effective_limit = (context_limit as f64 * threshold) as usize;
+    (3 * effective_limit / 20_000).clamp(10, 500)
+}
+</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L376">crates/goose/src/context_mgmt/mod.rs:376</a>
+</p>
+</section>
+<section aria-labelledby="structured-summaries-and-practical-limits">
+<h2 id="structured-summaries-and-practical-limits">Structured summaries and practical limits</h2>
+<p>StructuredSummary includes user intent, technical concepts, file activities, errors/fixes, problem-solving steps, user messages, pending tasks, current work, and next step. Its lists are intended to be ordered by importance. Lenient deserializers stringify unexpected objects or numbers; unknown top-level fields remain available to custom rendering. This tolerance is appropriate at a model-output boundary and avoids rejecting useful context for one schema deviation.</p>
+<p>Summarization is lossy and adds inference cost. Protecting the active turn and retaining the original transcript mitigates that cost but cannot prove that every earlier constraint survives the summary. Measuring retained tokens separately from cumulative usage prevents “the compacted prompt size” from being confused with “all tokens paid for so far.”</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-context-management/src/structured.rs#L1">crates/goose-context-management/src/structured.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/usage.rs#L1">crates/goose/src/agents/state_machine/usage.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="extensions.html">← MCP extensions & tool execution</a>
+<a href="storage.html">Persistence, sessions & concurrency →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

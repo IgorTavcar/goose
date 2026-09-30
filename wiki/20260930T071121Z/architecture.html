@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How native applications, the agent runtime, providers, and tools fit together.">
+<meta name="color-scheme" content="light dark">
+<title>Architecture &amp; system map · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html" aria-current="page">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Architecture & system map</h1>
+<p class="deck">How native applications, the agent runtime, providers, and tools fit together.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#the-system-in-one-view">The system in one view</a>
+<a href="#crate-boundaries">Crate boundaries</a>
+<a href="#two-agent-implementations-coexist">Two agent implementations coexist</a>
+<a href="#ports-adapters-and-dependency-direction">Ports, adapters, and dependency direction</a>
+<a href="#one-request-end-to-end">One request, end to end</a>
+</nav>
+<section aria-labelledby="the-system-in-one-view">
+<h2 id="the-system-in-one-view">The system in one view</h2>
+<p>Goose is a local agent application and a set of embeddable Rust libraries. A client supplies a conversation; an agent selects operations and obtains model completions; tools perform work; session storage records the resulting history. The language model proposes actions, while runtime code controls capability discovery, approval, dispatch, cancellation, and persistence.</p>
+<figure class="flow">
+<div role="img" aria-label="A reasoning turn crosses the model boundary and then the tool boundary; the agent closes the loop.">
+<span class="flow-box">CLI / Electron / ACP client</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">Goose runtime</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">Provider inference</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">Tool requests</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">MCP / platform tools</span>
+<span class="arrow" aria-hidden="true">→</span>
+<span class="flow-box">Persist & repeat</span>
+</div>
+<figcaption>A reasoning turn crosses the model boundary and then the tool boundary; the agent closes the loop.</figcaption>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/README.md#L1">README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/lib.rs#L1">crates/goose/src/lib.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="crate-boundaries">
+<h2 id="crate-boundaries">Crate boundaries</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Layer</th>
+<th scope="col">Code</th>
+<th scope="col">Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Contracts</td>
+<td>goose-provider-types</td>
+<td>Provider traits, conversation messages, model metadata, wire converters, retries, approval modes.</td>
+</tr>
+<tr>
+<td>Implementations</td>
+<td>goose-providers</td>
+<td>Native vendor adapters and JSON-defined provider configurations.</td>
+</tr>
+<tr>
+<td>Agent kernel</td>
+<td>goose-agent</td>
+<td>Generic ordered state machine, operations, inference, tool adapters, effects, and events.</td>
+</tr>
+<tr>
+<td>Context library</td>
+<td>goose-context-management</td>
+<td>Summarization and provider-level compaction without the application runtime.</td>
+</tr>
+<tr>
+<td>Application</td>
+<td>goose</td>
+<td>Concrete agent composition, sessions, ACP server, extensions, hooks, recipes, skills, permissions.</td>
+</tr>
+<tr>
+<td>Executable</td>
+<td>goose-cli</td>
+<td>Terminal sessions, noninteractive runs, ACP/HTTP serving, configuration and administration.</td>
+</tr>
+<tr>
+<td>Bindings</td>
+<td>goose-sdk / goose-sdk-types</td>
+<td>Shared ACP extension types and optional UniFFI provider/compaction bindings.</td>
+</tr>
+<tr>
+<td>Bundled MCP</td>
+<td>goose-mcp</td>
+<td>Packaged MCP servers; platform tools also live in goose itself.</td>
+</tr>
+<tr>
+<td>Model runtime</td>
+<td>goose-local-inference / goose-download-manager</td>
+<td>On-device inference and model download lifecycle.</td>
+</tr>
+<tr>
+<td>Remote transport</td>
+<td>goose-roaming</td>
+<td>Optional authenticated peer-to-peer byte streams; no agent/session semantics.</td>
+</tr>
+<tr>
+<td>Desktop</td>
+<td>ui/desktop</td>
+<td>Electron process lifecycle and React presentation over ACP.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/Cargo.toml#L1">Cargo.toml:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/README.md#L1">crates/goose-agent/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-roaming/README.md#L1">crates/goose-roaming/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/README.md#L1">crates/goose-sdk/README.md:1</a>
+</p>
+</section>
+<section aria-labelledby="two-agent-implementations-coexist">
+<h2 id="two-agent-implementations-coexist">Two agent implementations coexist</h2>
+<p>The legacy implementation remains in <code>agents/agent.rs</code>. The newer concrete pipeline is assembled there but uses the reusable machine from <code>goose-agent</code>. The environment gate accepts <code>1</code>, <code>true</code>, <code>TRUE</code>, or <code>yes</code>; its default is false. At the reply API, the selected path is passed explicitly as <code>use_state_machine</code>. This distinction matters when tracing callers: a boolean argument and the environment helper are separate pieces of the selection mechanism.</p>
+<p>The repository requires behavior changes to be implemented and tested in both loops during migration. A reader should not infer that every feature has already moved to the state machine, or that a generic GDK operation is identical to a Goose application operation.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/mod.rs#L72">crates/goose/src/agents/state_machine/mod.rs:72</a> · lines 72–76</figcaption>
+<pre><code data-source="crates/goose/src/agents/state_machine/mod.rs" data-start="72" data-end="76">pub fn enabled() -&gt; bool {
+    std::env::var(&quot;GOOSE_STATE_MACHINE&quot;)
+        .map(|v| matches!(v.as_str(), &quot;1&quot; | &quot;true&quot; | &quot;TRUE&quot; | &quot;yes&quot;))
+        .unwrap_or(false)
+}</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L2079">crates/goose/src/agents/agent.rs:2079</a>
+</p>
+</section>
+<section aria-labelledby="ports-adapters-and-dependency-direction">
+<h2 id="ports-adapters-and-dependency-direction">Ports, adapters, and dependency direction</h2>
+<p>The small crates define contracts; larger crates supply policies and adapters. <code>MachineSession</code> exposes an ID and optional conversation. <code>SessionLoader</code> and <code>EffectHandler</code> connect the machine to a runtime. Goose implements those traits on its SQLite-backed SessionManager. Provider implementations depend on message contracts rather than requiring a full desktop or CLI. This is a ports-and-adapters reading of the code, not a claim that the repository uses that name.</p>
+<p>ACP and MCP occupy different edges. ACP exposes an agent to a user-facing client and streams updates back. MCP exposes tools, resources, and prompts to the agent. A remote ACP-backed provider adds another arrangement: Goose can act as a client of a separate agent harness instead of directly calling a model HTTP endpoint.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/session.rs#L1">crates/goose/src/agents/state_machine/session.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/provider.rs#L1">crates/goose/src/acp/provider.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension_manager/mod.rs#L1">crates/goose/src/agents/extension_manager/mod.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="one-request-end-to-end">
+<h2 id="one-request-end-to-end">One request, end to end</h2>
+<ol>
+<li>The frontend initializes an ACP connection or the CLI constructs a session and agent.</li>
+<li>Session configuration selects a provider, model, working directory, extensions, mode, and optional recipe.</li>
+<li>The incoming message is assigned a stable identity and persisted. The selected loop prepares model-visible history and current capabilities.</li>
+<li>Inference streams text and assembled tool requests. Approval and tool operations process unanswered calls.</li>
+<li>Tool results are correlated by call ID, effects update durable state, and another model turn can consume the results.</li>
+<li>Completion, a turn limit, an error, approval waiting, or cancellation returns control to the client.</li>
+</ol>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L2109">crates/goose/src/agents/agent.rs:2109</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/inference.rs#L1">crates/goose-agent/src/inference.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L1">crates/goose/src/agents/state_machine/ops_toolcalling.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="index.html">← Goose internals wiki</a>
+<a href="philosophy.html">Design philosophy & tradeoffs →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

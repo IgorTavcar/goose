@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A curated reading list with the benefit, evidence, and limitation of each choice.">
+<meta name="color-scheme" content="light dark">
+<title>Brilliant code &amp; design patterns · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html" aria-current="page">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Brilliant code & design patterns</h1>
+<p class="deck">A curated reading list with the benefit, evidence, and limitation of each choice.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#1-tiny-kernel-durable-effects">1. Tiny kernel, durable effects</a>
+<a href="#2-the-retry-counter-lives-on-the-survivor">2. The retry counter lives on the survivor</a>
+<a href="#3-persist-before-publishing-an-answerable-request">3. Persist before publishing an answerable request</a>
+<a href="#4-restrictive-findings-never-become-permissive-by-accident">4. Restrictive findings never become permissive by accident</a>
+<a href="#5-signatures-define-reasoning-boundaries">5. Signatures define reasoning boundaries</a>
+<a href="#6-cache-installation-checks-the-world-did-not-change">6. Cache installation checks the world did not change</a>
+<a href="#7-compaction-retains-the-human-record">7. Compaction retains the human record</a>
+<a href="#8-reserve-the-writer-before-reading">8. Reserve the writer before reading</a>
+<a href="#9-heap-box-a-large-async-dispatch-chain">9. Heap-box a large async dispatch chain</a>
+<a href="#10-adapt-platform-constraints-at-trait-boundaries">10. Adapt platform constraints at trait boundaries</a>
+</nav>
+<section aria-labelledby="1-tiny-kernel-durable-effects">
+<h2 id="1-tiny-kernel-durable-effects">1. Tiny kernel, durable effects</h2>
+<p>
+<strong>Pattern:</strong> ports and adapters plus an ordered chain of responsibility. The kernel’s run loop reloads, selects, applies, and yields; session-specific persistence lives behind traits. <strong>Why it stands out:</strong> an application can replace SQL storage or define custom effects without copying the agent scheduler. <strong>Limit:</strong> restartable decisions still require operation authors to persist enough evidence and guarantee progress.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L14">crates/goose-agent/src/machine.rs:14</a> · lines 14–17</figcaption>
+<pre><code data-source="crates/goose-agent/src/machine.rs" data-start="14" data-end="17">pub trait MachineSession: MaybeSend + MaybeSync {
+    fn id(&amp;self) -&gt; &amp;str;
+    fn conversation(&amp;self) -&gt; Option&lt;&amp;Conversation&gt;;
+}</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/session.rs#L1">crates/goose/src/agents/state_machine/session.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="2-the-retry-counter-lives-on-the-survivor">
+<h2 id="2-the-retry-counter-lives-on-the-survivor">2. The retry counter lives on the survivor</h2>
+<p>
+<strong>Pattern:</strong> attach durable state to the record that survives a transformation. Resetting a failed recipe attempt keeps the kickoff and drops later history, so the attempt count lives on that kickoff. <strong>Why it stands out:</strong> it avoids a subtle infinite-retry bug where the counter vanishes during the very reset it governs. <strong>Limit:</strong> custom history transformations must preserve the same metadata invariant.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_retry.rs#L76">crates/goose/src/agents/state_machine/ops_retry.rs:76</a>
+</p>
+</section>
+<section aria-labelledby="3-persist-before-publishing-an-answerable-request">
+<h2 id="3-persist-before-publishing-an-answerable-request">3. Persist before publishing an answerable request</h2>
+<p>
+<strong>Pattern:</strong> make durable state visible before emitting a control message. <strong>Why it stands out:</strong> user confirmation can arrive in milliseconds, so ordering the database write first removes a real race rather than relying on UI slowness. <strong>Limit:</strong> this selected ordering is not a universal outbox protocol for all events.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/session.rs#L120">crates/goose/src/agents/state_machine/session.rs:120</a>
+</p>
+</section>
+<section aria-labelledby="4-restrictive-findings-never-become-permissive-by-accident">
+<h2 id="4-restrictive-findings-never-become-permissive-by-accident">4. Restrictive findings never become permissive by accident</h2>
+<p>
+<strong>Pattern:</strong> monotonic restriction aggregation. Deny dominates; approval can strengthen an allowed request; Allow cannot undo either. <strong>Why it stands out:</strong> independent security, permission, and repetition checks compose without requiring each to understand every other inspector. <strong>Limit:</strong> the coordinator continues after inspector errors, so failure policy must be considered independently from decision policy.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/tool_inspection.rs#L170">crates/goose/src/tool_inspection.rs:170</a>
+</p>
+</section>
+<section aria-labelledby="5-signatures-define-reasoning-boundaries">
+<h2 id="5-signatures-define-reasoning-boundaries">5. Signatures define reasoning boundaries</h2>
+<p>
+<strong>Pattern:</strong> protocol-aware incremental assembly. A signed block is immutable evidence, so its boundary survives visual text concatenation. <strong>Why it stands out:</strong> a few conditions prevent later provider requests from rejecting a reasoning transcript that looked harmless to a human. <strong>Limit:</strong> this invariant must remain consistent in both Conversation::push and collect_stream.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L1">crates/goose-provider-types/src/conversation.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/base.rs#L1">crates/goose-provider-types/src/base.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="6-cache-installation-checks-the-world-did-not-change">
+<h2 id="6-cache-installation-checks-the-world-did-not-change">6. Cache installation checks the world did not change</h2>
+<p>
+<strong>Pattern:</strong> optimistic generation validation around asynchronous fetch. <strong>Why it stands out:</strong> network discovery happens outside the mutex, while a version check prevents stale results from poisoning the shared cache. <strong>Limit:</strong> it permits duplicate misses and does not revoke the already returned fetched value.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension_manager/mod.rs#L749">crates/goose/src/agents/extension_manager/mod.rs:749</a>
+</p>
+</section>
+<section aria-labelledby="7-compaction-retains-the-human-record">
+<h2 id="7-compaction-retains-the-human-record">7. Compaction retains the human record</h2>
+<p>
+<strong>Pattern:</strong> independent projections over one durable history. <strong>Why it stands out:</strong> a bounded model request need not erase evidence from the user’s transcript. <strong>Limit:</strong> summaries remain lossy, and both message flags and content audiences must be honored.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/context_mgmt/mod.rs#L1">crates/goose/src/context_mgmt/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/conversation.rs#L1">crates/goose-provider-types/src/conversation.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="8-reserve-the-writer-before-reading">
+<h2 id="8-reserve-the-writer-before-reading">8. Reserve the writer before reading</h2>
+<p>
+<strong>Pattern:</strong> SQLite read-modify-write with BEGIN IMMEDIATE. <strong>Why it stands out:</strong> it solves lock-upgrade contention at the point where the transaction enters rather than scattering retries around later SQL. <strong>Limit:</strong> long write transactions still reduce concurrent writer throughput.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/session/session_manager.rs#L3855">crates/goose/src/session/session_manager.rs:3855</a>
+</p>
+</section>
+<section aria-labelledby="9-heap-box-a-large-async-dispatch-chain">
+<h2 id="9-heap-box-a-large-async-dispatch-chain">9. Heap-box a large async dispatch chain</h2>
+<p>
+<strong>Pattern:</strong> intentional async future allocation at a stack pressure boundary. The ACP dispatch implementation notes that its generated matching chain creates an approximately 85 KiB state machine and uses Box::pin. <strong>Why it stands out:</strong> the allocation is justified by worker-stack safety instead of being an unexplained abstraction. Initialization stays inline so pipelined new-session work cannot race before capabilities are established. <strong>Limit:</strong> the size comment is source evidence, not a fresh measurement in this wiki.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/dispatch.rs#L17">crates/goose/src/acp/server/dispatch.rs:17</a> · lines 17–20</figcaption>
+<pre><code data-source="crates/goose/src/acp/server/dispatch.rs" data-start="17" data-end="20">        // The MatchDispatchFrom chain produces an ~85KB async state machine.
+        // Box::pin moves it to the heap so it doesn&#x27;t overflow the tokio worker stack.
+        Box::pin(async move {
+            // Capture the connection handle so handlers can lazily activate</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/server/dispatch.rs#L1">crates/goose/src/acp/server/dispatch.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="10-adapt-platform-constraints-at-trait-boundaries">
+<h2 id="10-adapt-platform-constraints-at-trait-boundaries">10. Adapt platform constraints at trait boundaries</h2>
+<p>
+<strong>Pattern:</strong> portability policy in MaybeSend/MaybeSync and target-specific timers. <strong>Why it stands out:</strong> native hosts retain thread-safe contracts while WASM can hold JavaScript handles and await host promises without a Tokio runtime. <strong>Limit:</strong> sync tools execute inline on WASM and cannot be interrupted once started.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/README.md#L1">crates/goose-agent/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/maybe_send.rs#L1">crates/goose-provider-types/src/maybe_send.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/retry.rs#L1">crates/goose-provider-types/src/retry.rs:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="algorithms.html">← Important algorithms: detailed walkthroughs</a>
+<a href="apis.html">API & protocol reference →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

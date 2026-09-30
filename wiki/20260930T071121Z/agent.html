@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="The ordered pipeline, history predicates, effects, and cancellation semantics.">
+<meta name="color-scheme" content="light dark">
+<title>Agent loop &amp; state-machine specification · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html" aria-current="page">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Agent loop & state-machine specification</h1>
+<p class="deck">The ordered pipeline, history predicates, effects, and cancellation semantics.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#the-generic-transition-algorithm">The generic transition algorithm</a>
+<a href="#concrete-goose-operation-order">Concrete Goose operation order</a>
+<a href="#history-predicates-are-the-state-vocabulary">History predicates are the state vocabulary</a>
+<a href="#effects-are-data-persistence-is-an-adapter">Effects are data, persistence is an adapter</a>
+<a href="#inference-preparation-and-event-identity">Inference preparation and event identity</a>
+<a href="#cancellation-and-the-legacy-comparison">Cancellation and the legacy comparison</a>
+</nav>
+<section aria-labelledby="the-generic-transition-algorithm">
+<h2 id="the-generic-transition-algorithm">The generic transition algorithm</h2>
+<ol>
+<li>Load a session from the runtime. A missing conversation is an error when stepping.</li>
+<li>Walk the ordered steps. After cancellation, skip normal run methods and allow each cancel hook to rewrite a not-applicable result.</li>
+<li>For an inference step, first ask whether it applies. If so, collect tools, prompt parts, and MOIM parts from every step, rejecting duplicate tool names.</li>
+<li>Await the operation, run its cancellation hook if cancellation occurred, and select the first Applied result.</li>
+<li>Assign missing message IDs, persist the effects, and reload before the next pass. Stop on yield or when no step applies.</li>
+</ol>
+<p>No applicable step means quiescence, which is different from an exception. <code>yielded()</code> produces an Applied result with no effects and explicitly returns control to the caller. Applied with empty effects and no yield can spin indefinitely if its applicability never changes; operation authors must establish progress themselves.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L161">crates/goose-agent/src/machine.rs:161</a> · lines 161–179</figcaption>
+<pre><code data-source="crates/goose-agent/src/machine.rs" data-start="161" data-end="179">    pub async fn run&lt;R&gt;(&amp;self, runtime: &amp;R, session_id: &amp;str, emit: &amp;Emitter) -&gt; Result&lt;S&gt;
+    where
+        R: SessionLoader&lt;S&gt; + EffectHandler&lt;S, E&gt;,
+    {
+        loop {
+            let session = runtime.load(session_id).await?;
+            let Some(mut result) = self.step(&amp;session, emit).await? else {
+                break;
+            };
+            self.apply(runtime, &amp;session, &amp;mut result, emit).await?;
+            if result.yield_to_client {
+                break;
+            }
+        }
+        runtime.load(session_id).await
+    }
+}
+
+#[cfg(test)]</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/operation.rs#L1">crates/goose-agent/src/operation.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="concrete-goose-operation-order">
+<h2 id="concrete-goose-operation-order">Concrete Goose operation order</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Operation</th>
+<th scope="col">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Entry hook; slash command</td>
+<td>Lifecycle and commands precede normal work.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Steer; max turns; bang shell</td>
+<td>Accept steering, enforce budget, handle direct shell requests.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Compaction; tool-pair compaction</td>
+<td>Reduce context when applicable; full compaction is omitted for self-managed providers.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Tool approval</td>
+<td>Inspect advertised calls and persist approval/executability decisions.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Doctor; project; skills; recipe</td>
+<td>Handle specialized commands and capabilities.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Tool execution; unknown tool</td>
+<td>Dispatch valid extension calls and resolve remaining unknown requests.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Retry; stop hook; exit on error</td>
+<td>Check completion, enforce lifecycle policy, stop on terminal errors.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Inference</td>
+<td>Reach the model after higher-priority work declines.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Status is included in slash-command handlers rather than as a separate normal operation. Compaction is conditionally inserted. Tool-pair summarization is disabled for providers that manage their own context. This table is the construction order at the snapshot, not a timeless plugin priority registry.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L1644">crates/goose/src/agents/agent.rs:1644</a>
+</p>
+</section>
+<section aria-labelledby="history-predicates-are-the-state-vocabulary">
+<h2 id="history-predicates-are-the-state-vocabulary">History predicates are the state vocabulary</h2>
+<p>
+<code>messages_since_kickoff</code> finds the last user-role, user-visible message that is not a tool response. It returns the suffix starting there and errors if none exists. This makes tool results encoded with User role distinct from a genuine new user request. <code>assistant_turn_count</code> counts blocks of consecutive assistant-role messages, so streaming fragments do not automatically consume many autonomous turns. <code>ends_turn</code> requires a trailing assistant without errors, tool requests, or ActionRequired content.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/operation.rs#L49">crates/goose-agent/src/operation.rs:49</a> · lines 49–66</figcaption>
+<pre><code data-source="crates/goose-agent/src/operation.rs" data-start="49" data-end="66">pub fn assistant_turn_count(messages: &amp;[Message]) -&gt; u32 {
+    let mut turns = 0;
+    let mut in_assistant_block = false;
+    for message in messages.iter().rev() {
+        if message.role == rmcp::model::Role::Assistant {
+            if !in_assistant_block {
+                turns += 1;
+                in_assistant_block = true;
+            }
+        } else {
+            in_assistant_block = false;
+        }
+    }
+    turns
+}
+
+pub fn ends_turn(messages: &amp;[Message]) -&gt; bool {
+    messages.last().is_some_and(|last| {</code></pre>
+</figure>
+<p>The turn-budget operation stops when the suffix’s assistant-block count is at least max_turns. Its MOIM reminder starts once at least half the budget is consumed; max_turns=0 suppresses the reminder but does not disable the stopping comparison. Ordinary completion and budget exhaustion therefore have different predicates.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_maxturns.rs#L1">crates/goose/src/agents/state_machine/ops_maxturns.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="effects-are-data-persistence-is-an-adapter">
+<h2 id="effects-are-data-persistence-is-an-adapter">Effects are data, persistence is an adapter</h2>
+<p>The generic conversation effects append a message, replace a conversation, patch tool-request metadata, or change visibility. Goose adds recipe state, extension state, compaction with usage, and usage recording. The machine normalizes IDs before handing effects to the runtime. Its abstraction permits a caller to use step and apply separately or run the whole loop.</p>
+<p>Goose’s effect handler performs a persistence pass over the list and then emits selected notifications. Approval requests are published after persistence because a client can respond immediately. This is a carefully chosen race boundary. It is not one transaction covering every effect, nor a blanket rule that every streamed token is persisted before presentation.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/session.rs#L119">crates/goose/src/agents/state_machine/session.rs:119</a> · lines 119–123</figcaption>
+<pre><code data-source="crates/goose/src/agents/state_machine/session.rs" data-start="119" data-end="123">                    if contains_tool_confirmation_request(message) {
+                        // Responses can arrive immediately, so publish only after the persistence pass.
+                        emit.emit(AgentEvent::Message(message.clone())).await;
+                    }
+                    if let Some(usage) = message</code></pre>
+</figure>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/effects.rs#L1">crates/goose/src/agents/state_machine/effects.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="inference-preparation-and-event-identity">
+<h2 id="inference-preparation-and-event-identity">Inference preparation and event identity</h2>
+<p>The inference runner prepares a system prompt, advertised tools, and optional additional messages. It repairs model-visible conversation structure and merges messages for the request. Streamed text and tool calls accumulate into durable effects; usage is recorded separately. Repeated reasoning copied into a tool-call chunk is removed when it already exists in the current accumulator.</p>
+<p>The Agent reply wrapper is the shared live-event identity boundary. A producer intentionally streaming several events for one logical message must set its shared ID before that boundary. Consumers should correlate updates by identity rather than treating every event as a new message.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/inference.rs#L1">crates/goose-agent/src/inference.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L2100">crates/goose/src/agents/agent.rs:2100</a>
+</p>
+</section>
+<section aria-labelledby="cancellation-and-the-legacy-comparison">
+<h2 id="cancellation-and-the-legacy-comparison">Cancellation and the legacy comparison</h2>
+<p>Cancellation is cooperative. The machine checks before operations and provides cancel hooks after execution. Applied results observed after cancellation yield to the client. Tool discovery uses a biased select so cancellation can win before continuing discovery. Arbitrary operation futures are not universally aborted by the kernel; their implementation owns interruption and cleanup.</p>
+<p>The legacy loop carries local turns and compaction attempt counters inside its streaming loop. The newer path moves many decisions into independently applicable operations and history metadata. The legacy context-overflow branch refuses to continue after repeated recovery overflow. Both paths still expose AgentEvent streams and the application’s session/tool machinery.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-agent/src/machine.rs#L1">crates/goose-agent/src/machine.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L2455">crates/goose/src/agents/agent.rs:2455</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/AGENTS.md#L1">AGENTS.md:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="philosophy.html">← Design philosophy & tradeoffs</a>
+<a href="messages.html">Conversation & event contracts →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>

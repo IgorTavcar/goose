@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="What the approval pipeline enforces, and where its guarantees end.">
+<meta name="color-scheme" content="light dark">
+<title>Permissions, hooks &amp; trust boundaries · Goose internals</title>
+<link rel="stylesheet" href="assets/wiki.css">
+<script defer src="assets/wiki.js">
+</script>
+</head>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<aside class="sidebar">
+<a class="brand" href="index.html">goose / internals</a>
+<p class="edition">2026-09-30 · ac15f938151b<br>Source-grounded wiki edition</p>
+<nav aria-label="Wiki pages">
+<a href="index.html">Goose internals wiki</a>
+<a href="architecture.html">Architecture & system map</a>
+<a href="philosophy.html">Design philosophy & tradeoffs</a>
+<a href="agent.html">Agent loop & state-machine specification</a>
+<a href="messages.html">Conversation & event contracts</a>
+<a href="providers.html">Providers & inference APIs</a>
+<a href="extensions.html">MCP extensions & tool execution</a>
+<a href="context.html">Context management & compaction algorithms</a>
+<a href="storage.html">Persistence, sessions & concurrency</a>
+<a href="security.html" aria-current="page">Permissions, hooks & trust boundaries</a>
+<a href="recipes.html">Recipes, skills & agent orchestration</a>
+<a href="desktop.html">Desktop, CLI & client lifecycle</a>
+<a href="algorithms.html">Important algorithms: detailed walkthroughs</a>
+<a href="patterns.html">Brilliant code & design patterns</a>
+<a href="apis.html">API & protocol reference</a>
+<a href="engineering.html">Specifications, verification & reading guide</a>
+</nav>
+</aside>
+<main id="main">
+<header>
+<p class="eyebrow">Engineering field guide</p>
+<h1>Permissions, hooks & trust boundaries</h1>
+<p class="deck">What the approval pipeline enforces, and where its guarantees end.</p>
+</header>
+<nav class="toc" aria-label="On this page">
+<a href="#modes-and-decisions">Modes and decisions</a>
+<a href="#inspector-composition-is-restrictive">Inspector composition is restrictive</a>
+<a href="#approval-reconstruction-algorithm">Approval reconstruction algorithm</a>
+<a href="#hooks-vetoes-versus-observations">Hooks: vetoes versus observations</a>
+<a href="#acp-transport-authentication-and-origins">ACP transport authentication and origins</a>
+<a href="#extension-environments-telemetry-and-roaming">Extension environments, telemetry, and roaming</a>
+</nav>
+<section aria-labelledby="modes-and-decisions">
+<h2 id="modes-and-decisions">Modes and decisions</h2>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/goose_mode.rs#L22">crates/goose-provider-types/src/goose_mode.rs:22</a> · lines 22–32</figcaption>
+<pre><code data-source="crates/goose-provider-types/src/goose_mode.rs" data-start="22" data-end="32">pub enum GooseMode {
+    #[default]
+    #[strum(message = &quot;Automatically approve tool calls&quot;)]
+    Auto,
+    #[strum(message = &quot;Ask before every tool call&quot;)]
+    Approve,
+    #[strum(message = &quot;Ask only for sensitive tool calls&quot;)]
+    SmartApprove,
+    #[strum(message = &quot;Chat only, no tool calls&quot;)]
+    Chat,
+}</code></pre>
+</figure>
+<p>Mode is one input to policy, not the entire security mechanism. Tool inspectors can allow, deny, or require approval with a warning. Permissions include one-time and persistent allow/deny choices and cancellation. The state machine persists executability and reconstructs confirmations from messages, so an approval reply is an input to a durable decision rather than an untracked UI action.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-provider-types/src/permission.rs#L1">crates/goose-provider-types/src/permission.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_tool_approval.rs#L1">crates/goose/src/agents/state_machine/ops_tool_approval.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="inspector-composition-is-restrictive">
+<h2 id="inspector-composition-is-restrictive">Inspector composition is restrictive</h2>
+<p>The default manager registers security, egress, adversary, permission, and repetition inspectors. Enabled inspectors run in registration order and contribute findings. Deny removes a request from approved and needs-approval lists. RequireApproval removes it from approved and only adds it if it has not been denied. Allow does not override an earlier restriction. This is a useful monotonic policy composition: later permissive evidence cannot weaken a stricter decision.</p>
+<p>The inspection coordinator logs an individual inspector error and continues. Therefore the coordinator itself is not globally fail-closed on every inspector exception. Each inspector’s actual detection and failure semantics must be reviewed separately; the presence of an “adversary” or “security” component is not a proof that all hostile prompts are detected.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/agent.rs#L769">crates/goose/src/agents/agent.rs:769</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/tool_inspection.rs#L1">crates/goose/src/tool_inspection.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="approval-reconstruction-algorithm">
+<h2 id="approval-reconstruction-algorithm">Approval reconstruction algorithm</h2>
+<p>ApprovalState scans the kickoff suffix, building sets of answered call IDs and confirmation requests plus a map of confirmation responses. Pending approval candidates exclude answered requests, already requested/answered confirmations, externally executed calls, nonexecutable calls, parse errors, and calls not in the advertised capability set. A response is applicable only while the underlying tool request is still unanswered.</p>
+<p>The matching key is the tool-call ID. A client that resends a decision after cancellation or completion must not create a fresh execution merely by producing another user-role message. Persisted executability and confirmation bookkeeping make that distinction inspectable.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_tool_approval.rs#L1">crates/goose/src/agents/state_machine/ops_tool_approval.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/tool_confirmation.rs#L1">crates/goose/src/agents/state_machine/tool_confirmation.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="hooks-vetoes-versus-observations">
+<h2 id="hooks-vetoes-versus-observations">Hooks: vetoes versus observations</h2>
+<p>PreToolUse is a blocking policy chain; a denial returns a tool error before execution. PreToolUseResult observes the chosen outcome and has no veto. PostToolUse or PostToolUseFailure fires according to both transport success and the result’s is_error flag. Extended shell/file events add matcher context. Stop hooks can request continued work, bounded by a configured cap so hooks do not create an unbounded finish loop.</p>
+<p>Sharing lifecycle helpers between ordinary extension tools and recipe final-output execution avoids separate policy semantics for two execution paths. Observational callbacks are best effort and should not be assumed to prove successful external logging.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_toolcalling.rs#L1">crates/goose/src/agents/state_machine/ops_toolcalling.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_recipe.rs#L1">crates/goose/src/agents/state_machine/ops_recipe.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/state_machine/ops_stop_hook.rs#L1">crates/goose/src/agents/state_machine/ops_stop_hook.rs:1</a>
+</p>
+</section>
+<section aria-labelledby="acp-transport-authentication-and-origins">
+<h2 id="acp-transport-authentication-and-origins">ACP transport authentication and origins</h2>
+<p>The standalone transport supports a secret in X-Secret-Key or a token query parameter. The comparison uses subtle::ConstantTimeEq for candidate bytes. The router selects an origin policy based on configured allowed origins and whether token auth is required. Health/status endpoints are auxiliary routes; their success is not evidence that ACP authentication or a provider request succeeds.</p>
+<figure class="code">
+<figcaption>Exact source excerpt · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/transport/auth.rs#L9">crates/goose/src/acp/transport/auth.rs:9</a> · lines 9–14</figcaption>
+<pre><code data-source="crates/goose/src/acp/transport/auth.rs" data-start="9" data-end="14">pub fn token_matches(candidate: Option&lt;&amp;str&gt;, expected: &amp;str) -&gt; bool {
+    candidate
+        .map(|key| bool::from(key.as_bytes().ct_eq(expected.as_bytes())))
+        .unwrap_or(false)
+}
+</code></pre>
+</figure>
+<p>A transport credential authorizes access to a backend; it is distinct from per-tool approval. Desktop also verifies TLS readiness fingerprints in its backend startup path and keeps nodeIntegration off with contextIsolation on. Those controls concern frontend/backend trust, not a sandbox around every shell tool.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/acp/transport/mod.rs#L1">crates/goose/src/acp/transport/mod.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/ui/desktop/src/main.ts#L1">ui/desktop/src/main.ts:1</a>
+</p>
+</section>
+<section aria-labelledby="extension-environments-telemetry-and-roaming">
+<h2 id="extension-environments-telemetry-and-roaming">Extension environments, telemetry, and roaming</h2>
+<p>Envs rejects a curated set of process-manipulation variables such as PATH and loader injection settings when constructing extension environment configuration. Secrets can come from environment, system keyring, or a private secrets file. The SDK observability hook defaults payload capture off because system prompts and conversations can contain sensitive data. Enabling capture changes that disclosure boundary.</p>
+<p>Roaming uses authenticated peer keys and a trust book rather than possession of a connection card. A card contains public identity and reachability information; accepting a peer grants the full ACP surface described by that transport. Revocation reload failure is documented as fail-closed. This is a different trust model from the local HTTP bearer secret.</p>
+<p class="refs">Source: <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/agents/extension.rs#L1">crates/goose/src/agents/extension.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose/src/config/base.rs#L1">crates/goose/src/config/base.rs:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-sdk/README.md#L1">crates/goose-sdk/README.md:1</a> · <a class="source" href="https://github.com/IgorTavcar/goose/blob/ac15f938151bb8c0efd93ed9c2c1cf61298934bf/crates/goose-roaming/README.md#L1">crates/goose-roaming/README.md:1</a>
+</p>
+</section>
+<nav class="pager" aria-label="Previous and next page">
+<a href="storage.html">← Persistence, sessions & concurrency</a>
+<a href="recipes.html">Recipes, skills & agent orchestration →</a>
+</nav>
+<footer>Based on <a href="https://github.com/IgorTavcar/goose/tree/ac15f938151bb8c0efd93ed9c2c1cf61298934bf">ac15f938151b</a>. Code excerpts retain the repository’s <a href="../../LICENSE">Apache-2.0 license</a>. Analysis is specific to this revision. <a href="engineering.html">Provenance &amp; verification</a> · <a href="manifest.json">Manifest</a>
+</footer>
+</main>
+</div>
+</body>
+</html>
